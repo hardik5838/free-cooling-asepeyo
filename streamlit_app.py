@@ -1,151 +1,186 @@
+## app.py
 import streamlit as st
-import pandas as pd
-import math
-from pathlib import Path
+import plotly.graph_objects as go
+import psychrolib as psy
+import numpy as np
 
-# Set the title and favicon that appear in the Browser's tab bar.
+# Configurar la biblioteca psicrométrica para usar unidades del Sistema Internacional (SI)
+psy.SetUnitSystem(psy.SI)
+
+# --- Configuración de la Página ---
 st.set_page_config(
-    page_title='GDP dashboard',
-    page_icon=':earth_americas:', # This is an emoji shortcode. Could be a URL too.
+    page_title="Análisis de Free Cooling",
+    page_icon="❄️",
+    layout="wide"
 )
 
-# -----------------------------------------------------------------------------
-# Declare some useful functions.
+st.title("❄️ Aplicación de Análisis de Free Cooling y Psicrometría")
+st.write("""
+Esta aplicación te ayuda a determinar el potencial de 'free cooling' comparando
+las condiciones del aire interior y exterior en un gráfico psicrométrico.
+""")
 
-@st.cache_data
-def get_gdp_data():
-    """Grab GDP data from a CSV file.
+# --- Funciones de Cálculo y Gráfico ---
 
-    This uses caching to avoid having to read the file every time. If we were
-    reading from an HTTP endpoint instead of a file, it's a good idea to set
-    a maximum age to the cache with the TTL argument: @st.cache_data(ttl='1d')
+def calculate_psychrometrics(tdb, rel_hum, pressure=101325):
     """
+    Calcula las propiedades psicrométricas a partir de Tdb y RH.
+    Devuelve un diccionario con las propiedades clave.
+    """
+    if rel_hum > 1.0:
+        rel_hum = rel_hum / 100.0  # Asegurarse de que RH esté en fracción (ej: 0.5)
 
-    # Instead of a CSV on disk, you could read from an HTTP endpoint here too.
-    DATA_FILENAME = Path(__file__).parent/'data/gdp_data.csv'
-    raw_gdp_df = pd.read_csv(DATA_FILENAME)
+    try:
+        # Calcular todas las propiedades desde Tdb y RH
+        results = psy.CalcPsychrometricsFromRelHum(tdb, rel_hum, pressure)
 
-    MIN_YEAR = 1960
-    MAX_YEAR = 2022
+        # Extraer los valores (HumRatio, TDewPoint, TWetBulb, Enthalpy, etc.)
+        hum_ratio = results[0]      # kg_vapor / kg_aire_seco
+        t_dew_point = results[1]    # °C
+        t_wet_bulb = results[2]     # °C
+        enthalpy = results[3] / 1000  # J/kg -> kJ/kg
 
-    # The data above has columns like:
-    # - Country Name
-    # - Country Code
-    # - [Stuff I don't care about]
-    # - GDP for 1960
-    # - GDP for 1961
-    # - GDP for 1962
-    # - ...
-    # - GDP for 2022
-    #
-    # ...but I want this instead:
-    # - Country Name
-    # - Country Code
-    # - Year
-    # - GDP
-    #
-    # So let's pivot all those year-columns into two: Year and GDP
-    gdp_df = raw_gdp_df.melt(
-        ['Country Code'],
-        [str(x) for x in range(MIN_YEAR, MAX_YEAR + 1)],
-        'Year',
-        'GDP',
+        return {
+            "Tdb": tdb,
+            "RH": rel_hum * 100,
+            "HumRatio_kg_kg": hum_ratio,
+            "HumRatio_g_kg": hum_ratio * 1000, # Convertir a g/kg para el gráfico
+            "TDewPoint": t_dew_point,
+            "TWetBulb": t_wet_bulb,
+            "Enthalpy_kJ_kg": enthalpy
+        }
+    except Exception as e:
+        st.error(f"Error en el cálculo psicrométrico: {e}")
+        return None
+
+def plot_psychrometric_chart(internal_props, external_props):
+    """
+    Dibuja el gráfico psicrométrico con los puntos de aire interior y exterior.
+    """
+    fig = go.Figure()
+
+    # Rango de temperaturas para dibujar las líneas
+    temp_range = np.linspace(-10, 50, 61)
+
+    # 1. Dibujar la Línea de Saturación (100% RH)
+    hum_ratio_100 = [psy.CalcPsychrometricsFromRelHum(t, 1.0, 101325)[0] * 1000 for t in temp_range]
+    fig.add_trace(go.Scatter(
+        x=temp_range,
+        y=hum_ratio_100,
+        mode='lines',
+        name='100% RH (Saturación)',
+        line=dict(color='blue', width=3)
+    ))
+
+    # 2. Dibujar líneas de Humedad Relativa (RH) constantes
+    for rh in [80, 60, 40, 20]:
+        rh_fraction = rh / 100.0
+        hum_ratio_rh = [psy.CalcPsychrometricsFromRelHum(t, rh_fraction, 101325)[0] * 1000 for t in temp_range]
+        fig.add_trace(go.Scatter(
+            x=temp_range,
+            y=hum_ratio_rh,
+            mode='lines',
+            name=f'{rh}% RH',
+            line=dict(color='rgba(100, 100, 100, 0.5)', width=1, dash='dot')
+        ))
+    
+    # 3. Añadir punto de Aire Interior
+    if internal_props:
+        fig.add_trace(go.Scatter(
+            x=[internal_props['Tdb']],
+            y=[internal_props['HumRatio_g_kg']],
+            mode='markers+text',
+            name='Aire Interior',
+            text=["<b>Interior</b>"],
+            textposition="top right",
+            marker=dict(color='red', size=15, symbol='x')
+        ))
+
+    # 4. Añadir punto de Aire Exterior
+    if external_props:
+        fig.add_trace(go.Scatter(
+            x=[external_props['Tdb']],
+            y=[external_props['HumRatio_g_kg']],
+            mode='markers+text',
+            name='Aire Exterior',
+            text=["<b>Exterior</b>"],
+            textposition="bottom right",
+            marker=dict(color='green', size=15, symbol='circle')
+        ))
+
+    # --- Configuración del Layout del Gráfico ---
+    fig.update_layout(
+        title="Gráfico Psicrométrico Interactivo",
+        xaxis_title="Temperatura de Bulbo Seco (Tdb) - °C",
+        yaxis_title="Relación de Humedad (g vapor / kg aire seco)",
+        xaxis=dict(range=[-10, 40]),
+        yaxis=dict(range=[0, 30]),
+        height=600,
+        legend_title="Leyenda"
     )
+    
+    return fig
 
-    # Convert years from string to integers
-    gdp_df['Year'] = pd.to_numeric(gdp_df['Year'])
+# --- Barra Lateral de Entradas (Inputs) ---
+st.sidebar.header("Parámetros del Aire 💨")
 
-    return gdp_df
+st.sidebar.subheader("1. Aire Interior (Sensores)")
+t_int_db = st.sidebar.slider("Temperatura Interior (Tdb)", min_value=15.0, max_value=35.0, value=24.0, step=0.5)
+rh_int = st.sidebar.slider("Humedad Relativa Interior (RH)", min_value=0, max_value=100, value=50, step=1)
 
-gdp_df = get_gdp_data()
+st.sidebar.subheader("2. Aire Exterior (Datos API)")
+st.sidebar.info("Estos valores vendrán de tu API 'Hardik Freecooling' cuando tengamos la URL.")
+t_ext_db = st.sidebar.slider("Temperatura Exterior (Tdb)", min_value=-10.0, max_value=50.0, value=15.0, step=0.5)
+rh_ext = st.sidebar.slider("Humedad Relativa Exterior (RH)", min_value=0, max_value=100, value=60, step=1)
 
-# -----------------------------------------------------------------------------
-# Draw the actual page
+# --- Lógica Principal y Visualización ---
 
-# Set the title that appears at the top of the page.
-'''
-# :earth_americas: GDP dashboard
+# Calcular propiedades
+props_int = calculate_psychrometrics(t_int_db, rh_int)
+props_ext = calculate_psychrometrics(t_ext_db, rh_ext)
 
-Browse GDP data from the [World Bank Open Data](https://data.worldbank.org/) website. As you'll
-notice, the data only goes to 2022 right now, and datapoints for certain years are often missing.
-But it's otherwise a great (and did I mention _free_?) source of data.
-'''
+# Dividir la página en columnas para métricas y recomendaciones
+col_metrics, col_recommendation = st.columns([1, 1])
 
-# Add some spacing
-''
-''
+with col_metrics:
+    st.subheader("Métricas Calculadas")
+    if props_int and props_ext:
+        col_int, col_ext = st.columns(2)
+        with col_int:
+            st.markdown("##### 🏠 INTERIOR")
+            st.metric("Entalpía (Energía)", f"{props_int['Enthalpy_kJ_kg']:.1f} kJ/kg")
+            st.metric("Punto de Rocío (Tdp)", f"{props_int['TDewPoint']:.1f} °C")
 
-min_value = gdp_df['Year'].min()
-max_value = gdp_df['Year'].max()
+        with col_ext:
+            st.markdown("##### 🌳 EXTERIOR")
+            st.metric("Entalpía (Energía)", f"{props_ext['Enthalpy_kJ_kg']:.1f} kJ/kg")
+            st.metric("Punto de Rocío (Tdp)", f"{props_ext['TDewPoint']:.1f} °C")
 
-from_year, to_year = st.slider(
-    'Which years are you interested in?',
-    min_value=min_value,
-    max_value=max_value,
-    value=[min_value, max_value])
+with col_recommendation:
+    st.subheader("Recomendación de Free Cooling")
+    if props_int and props_ext:
+        
+        # Condiciones para Free Cooling:
+        # 1. Aire exterior MÁS FRÍO que el interior.
+        # 2. Aire exterior con MENOS ENERGÍA (Entalpía) que el interior.
+        # 3. (Opcional) Aire exterior por encima de un mínimo (ej. 13°C) para no enfriar demasiado.
+        
+        temp_diff = props_int['Tdb'] - props_ext['Tdb']
+        enthalpy_diff = props_int['Enthalpy_kJ_kg'] - props_ext['Enthalpy_kJ_kg']
 
-countries = gdp_df['Country Code'].unique()
-
-if not len(countries):
-    st.warning("Select at least one country")
-
-selected_countries = st.multiselect(
-    'Which countries would you like to view?',
-    countries,
-    ['DEU', 'FRA', 'GBR', 'BRA', 'MEX', 'JPN'])
-
-''
-''
-''
-
-# Filter the data
-filtered_gdp_df = gdp_df[
-    (gdp_df['Country Code'].isin(selected_countries))
-    & (gdp_df['Year'] <= to_year)
-    & (from_year <= gdp_df['Year'])
-]
-
-st.header('GDP over time', divider='gray')
-
-''
-
-st.line_chart(
-    filtered_gdp_df,
-    x='Year',
-    y='GDP',
-    color='Country Code',
-)
-
-''
-''
-
-
-first_year = gdp_df[gdp_df['Year'] == from_year]
-last_year = gdp_df[gdp_df['Year'] == to_year]
-
-st.header(f'GDP in {to_year}', divider='gray')
-
-''
-
-cols = st.columns(4)
-
-for i, country in enumerate(selected_countries):
-    col = cols[i % len(cols)]
-
-    with col:
-        first_gdp = first_year[first_year['Country Code'] == country]['GDP'].iat[0] / 1000000000
-        last_gdp = last_year[last_year['Country Code'] == country]['GDP'].iat[0] / 1000000000
-
-        if math.isnan(first_gdp):
-            growth = 'n/a'
-            delta_color = 'off'
+        if temp_diff > 2 and enthalpy_diff > 4: # Umbrales (ej: 2°C y 4 kJ/kg de diferencia)
+            st.success("✅ POTENCIAL DE FREE COOLING DETECTADO")
+            st.write(f"""
+            El aire exterior está **{temp_diff:.1f} °C más frío** y tiene **{enthalpy_diff:.1f} kJ/kg menos energía** que el aire interior.
+            
+            **Acción:** Se puede utilizar el aire exterior para enfriar el edificio y ahorrar energía.
+            """)
         else:
-            growth = f'{last_gdp / first_gdp:,.2f}x'
-            delta_color = 'normal'
+            st.error("❌ FREE COOLING NO RECOMENDADO")
+            st.write("""
+            Las condiciones exteriores no son favorables (aire muy caliente o muy húmedo). 
+            Se requiere enfriamiento mecánico (Compresores).
+            """)
 
-        st.metric(
-            label=f'{country} GDP',
-            value=f'{last_gdp:,.0f}B',
-            delta=growth,
-            delta_color=delta_color
-        )
+# Mostrar el gráfico psicrométrico
+st.plotly_chart(plot_psychrometric_chart(props_int, props_ext), use_container_width=True)
