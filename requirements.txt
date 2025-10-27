@@ -1,2 +1,6 @@
+## requirements.txt
 streamlit
 pandas
+plotly
+psychrolib
+numpy
