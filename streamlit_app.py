@@ -20,7 +20,8 @@ encabezado de autenticación a 'ApiKey' según la documentación.
 # --- Configuración de la API ---
 # Carga la clave de API desde el archivo de secretos
 try:
-    API_KEY = x5cuvkj5q342627bawvwkrjgd85z4fvd
+    API_KEY = "x5cuvkj5q342627bawvwkrjgd85z4fvd"
+
 except KeyError:
     st.error("Error: No se encontró la 'ARANET_API_KEY' en el archivo .streamlit/secrets.toml")
     st.error("Asegúrate de que el archivo existe y la clave está guardada.")
