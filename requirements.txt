@@ -1,6 +1,8 @@
+requests
 streamlit
-pandas
 plotly
 psychrolib
 numpy
-requests
+pandas
+openmeteo-requests
+retry-requests
