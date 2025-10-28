@@ -20,7 +20,7 @@ de tus sensores. Usaremos esta información para identificar tu sensor exterior.
 # --- Configuración de la API ---
 # Carga la clave de API desde el archivo de secretos
 try:
-    API_KEY = st.secrets["ARANET_API_KEY"]
+    API_KEY = "devbam52d8nrwfp7v3mx6bdrburcepdt"
 except KeyError:
     st.error("Error: No se encontró la 'ARANET_API_KEY' en el archivo .streamlit/secrets.toml")
     st.error("Asegúrate de haber creado la carpeta .streamlit y el archivo secrets.toml como se indica en las instrucciones.")
