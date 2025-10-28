@@ -12,7 +12,7 @@ def get_api_headers():
     diccionario de encabezados (headers) correcto.
     """
     try:
-        api_key = st.secrets["ARANET_API_KEY"]
+        api_key = "rv6rcedukc7tvwna9qfn3ymxju7f8hu2"
         headers = {
             "ApiKey": api_key,
             "Accept": "application/json"
