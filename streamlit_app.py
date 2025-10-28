@@ -37,46 +37,31 @@ API_HEADERS = {
     "Accept": "application/json"
 }
 # -------------------------
+# --- Funciones de Carga de Datos (Sin cambios) ---
 
-# --- Funciones de Carga de Datos (sin cambios) ---
-
-@st.cache_data(ttl=600) # Cachear los sensores por 10 minutos
+@st.cache_data(ttl=600)
 def load_aranet_sensors(headers):
-    """Carga la lista de todos los sensores."""
     try:
         url = f"{API_BASE_URL}/sensors"
         response = requests.get(url, headers=headers)
-        response.raise_for_status() # Lanza un error si la petición falla
+        response.raise_for_status()
         return response.json()
-    except requests.exceptions.HTTPError as err:
-        st.error(f"Error HTTP al cargar sensores: {err}")
-        st.error(f"Respuesta del servidor: {err.response.text}")
-        if err.response.status_code == 401:
-            st.warning("Error 401: No autorizado. Aunque hemos corregido el encabezado a 'ApiKey', el token sigue siendo inválido. ¿Está la clave bien copiada en secrets.toml?")
-        return None
     except Exception as e:
-        st.error(f"Error inesperado al cargar sensores: {e}")
+        st.error(f"Error al cargar sensores: {e}")
         return None
 
-@st.cache_data(ttl=60) # Cachear las lecturas por 1 minuto
+@st.cache_data(ttl=60)
 def get_last_measurements(headers):
-    """Obtiene las últimas mediciones de todos los sensores."""
     try:
         url = f"{API_BASE_URL}/measurements/last"
         response = requests.get(url, headers=headers)
         response.raise_for_status()
         return response.json()
-    except requests.exceptions.HTTPError as err:
-        st.error(f"Error HTTP al cargar mediciones: {err}")
-        st.error(f"Respuesta del servidor: {err.response.text}")
-        if err.response.status_code == 401:
-            st.warning("Error 401: No autorizado. ¿Está la clave bien copiada en secrets.toml?")
-        return None
     except Exception as e:
-        st.error(f"Error inesperado al cargar mediciones: {e}")
+        st.error(f"Error al cargar mediciones: {e}")
         return None
 
-# --- Lógica Principal de la App (sin cambios) ---
+# --- Lógica Principal de la App (Modificada) ---
 
 st.header("1. Cargar Lista de Sensores")
 st.write("Presiona este botón para obtener la lista de todos tus sensores.")
@@ -88,7 +73,13 @@ if st.button("Cargar Sensores (GET /sensors)"):
         if 'sensors' in sensors_data:
             df_sensors = pd.json_normalize(sensors_data['sensors'])
             st.success(f"¡Éxito! Se encontraron {len(df_sensors)} sensores.")
-            st.dataframe(df_sensors[['id', 'name', 'type', 'value', 'rssi', 'battery']])
+            
+            # --- LÍNEA CORREGIDA ---
+            # En lugar de seleccionar columnas, mostramos toda la tabla.
+            st.write("Datos de Sensores (Tabla Completa):")
+            st.dataframe(df_sensors)
+            # -------------------------
+            
             st.caption("Datos JSON completos:")
             st.json(sensors_data)
         else:
@@ -107,7 +98,13 @@ if st.button("Cargar Mediciones (GET /measurements/last)"):
         if 'data' in measurements_data:
             df_measure = pd.json_normalize(measurements_data['data'])
             st.success(f"¡Éxito! Se encontraron {len(df_measure)} mediciones.")
+            
+            # --- LÍNEA CORREGIDA ---
+            # Mostramos también esta tabla completa.
+            st.write("Datos de Mediciones (Tabla Completa):")
             st.dataframe(df_measure)
+            # -------------------------
+            
             st.caption("Datos JSON completos:")
             st.json(measurements_data)
         else:
