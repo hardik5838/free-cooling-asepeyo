@@ -11,52 +11,16 @@ st.set_page_config(
     layout="wide"
 )
 
-st.title("API de Aranet Cloud ")
+st.title("📡 Explorador de API de Aranet Cloud (V2)")
 st.write("""
 Presiona los botones para conectarte a tu API. Hemos actualizado el 
 encabezado de autenticación a 'ApiKey' según la documentación.
-""")## app.py
-import streamlit as st
-import requests
-import json
-import pandas as pd
-
-# --- Configuración de la Página ---
-st.set_page_config(
-    page_title="Explorador de API Aranet",
-    page_icon="",
-    layout="wide"
-)
-
-st.title(" Explorador de API de Aranet Cloud")
-st.write("""
-Presiona los botones para conectarte a tu API de Aranet y ver los datos 
-de tus sensores. Usaremos esta información para identificar tu sensor exterior.
 """)
 
 # --- Configuración de la API ---
 # Carga la clave de API desde el archivo de secretos
 try:
-    API_KEY = "x5cuvkj5q342627bawvwkrjgd85z4fvd"
-except KeyError:
-    st.error("Error: No se encontró la 'ARANET_API_KEY' en el archivo .streamlit/secrets.toml")
-    st.error("Asegúrate de haber creado la carpeta .streamlit y el archivo secrets.toml como se indica en las instrucciones.")
-    st.stop()
-
-API_BASE_URL = "https://aranet.cloud/api/v1"
-
-# La documentación de Aranet (OpenAPI/Swagger) indica que se usa 'Bearer'
-API_HEADERS = {
-    "Authorization": f"Bearer {API_KEY}",
-    "Accept": "application/json"
-}
-
-
-
-# --- Configuración de la API ---
-# Carga la clave de API desde el archivo de secretos
-try:
-    API_KEY = st.secrets["ARANET_API_KEY"]
+    API_KEY = x5cuvkj5q342627bawvwkrjgd85z4fvd
 except KeyError:
     st.error("Error: No se encontró la 'ARANET_API_KEY' en el archivo .streamlit/secrets.toml")
     st.error("Asegúrate de que el archivo existe y la clave está guardada.")
