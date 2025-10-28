@@ -6,3 +6,4 @@ numpy
 pandas
 openmeteo-requests
 retry-requests
+requests_cache
