@@ -11,7 +11,24 @@ st.set_page_config(
     layout="wide"
 )
 
-st.title("📡 Explorador de API de Aranet Cloud")
+st.title("API de Aranet Cloud ")
+st.write("""
+Presiona los botones para conectarte a tu API. Hemos actualizado el 
+encabezado de autenticación a 'ApiKey' según la documentación.
+""")## app.py
+import streamlit as st
+import requests
+import json
+import pandas as pd
+
+# --- Configuración de la Página ---
+st.set_page_config(
+    page_title="Explorador de API Aranet",
+    page_icon="",
+    layout="wide"
+)
+
+st.title(" Explorador de API de Aranet Cloud")
 st.write("""
 Presiona los botones para conectarte a tu API de Aranet y ver los datos 
 de tus sensores. Usaremos esta información para identificar tu sensor exterior.
@@ -20,7 +37,7 @@ de tus sensores. Usaremos esta información para identificar tu sensor exterior.
 # --- Configuración de la API ---
 # Carga la clave de API desde el archivo de secretos
 try:
-    API_KEY = "devbam52d8nrwfp7v3mx6bdrburcepdt"
+    API_KEY = "x5cuvkj5q342627bawvwkrjgd85z4fvd"
 except KeyError:
     st.error("Error: No se encontró la 'ARANET_API_KEY' en el archivo .streamlit/secrets.toml")
     st.error("Asegúrate de haber creado la carpeta .streamlit y el archivo secrets.toml como se indica en las instrucciones.")
@@ -34,7 +51,29 @@ API_HEADERS = {
     "Accept": "application/json"
 }
 
-# --- Funciones de Carga de Datos ---
+
+
+# --- Configuración de la API ---
+# Carga la clave de API desde el archivo de secretos
+try:
+    API_KEY = st.secrets["ARANET_API_KEY"]
+except KeyError:
+    st.error("Error: No se encontró la 'ARANET_API_KEY' en el archivo .streamlit/secrets.toml")
+    st.error("Asegúrate de que el archivo existe y la clave está guardada.")
+    st.stop()
+
+API_BASE_URL = "https://aranet.cloud/api/v1"
+
+# --- LÍNEA CORREGIDA ---
+# Basado en la documentación 'openapi' (Swagger), el encabezado
+# que se espera es "ApiKey", no "Authorization".
+API_HEADERS = {
+    "ApiKey": API_KEY,  # <--- ¡Este es el cambio!
+    "Accept": "application/json"
+}
+# -------------------------
+
+# --- Funciones de Carga de Datos (sin cambios) ---
 
 @st.cache_data(ttl=600) # Cachear los sensores por 10 minutos
 def load_aranet_sensors(headers):
@@ -42,13 +81,13 @@ def load_aranet_sensors(headers):
     try:
         url = f"{API_BASE_URL}/sensors"
         response = requests.get(url, headers=headers)
-        response.raise_for_status() # Lanza un error si la petición falla (ej. 401, 403)
+        response.raise_for_status() # Lanza un error si la petición falla
         return response.json()
     except requests.exceptions.HTTPError as err:
         st.error(f"Error HTTP al cargar sensores: {err}")
         st.error(f"Respuesta del servidor: {err.response.text}")
         if err.response.status_code == 401:
-            st.warning("Error 401: No autorizado. ¿La API key es correcta? ¿El formato del 'Header' es 'Bearer'?")
+            st.warning("Error 401: No autorizado. Aunque hemos corregido el encabezado a 'ApiKey', el token sigue siendo inválido. ¿Está la clave bien copiada en secrets.toml?")
         return None
     except Exception as e:
         st.error(f"Error inesperado al cargar sensores: {e}")
@@ -65,25 +104,25 @@ def get_last_measurements(headers):
     except requests.exceptions.HTTPError as err:
         st.error(f"Error HTTP al cargar mediciones: {err}")
         st.error(f"Respuesta del servidor: {err.response.text}")
+        if err.response.status_code == 401:
+            st.warning("Error 401: No autorizado. ¿Está la clave bien copiada en secrets.toml?")
         return None
     except Exception as e:
         st.error(f"Error inesperado al cargar mediciones: {e}")
         return None
 
-# --- Lógica Principal de la App ---
+# --- Lógica Principal de la App (sin cambios) ---
 
 st.header("1. Cargar Lista de Sensores")
-st.write("Presiona este botón para obtener la lista de todos tus sensores. Busca en la tabla tu sensor de 'Aire Exterior' y anota su `id`.")
+st.write("Presiona este botón para obtener la lista de todos tus sensores.")
 
 if st.button("Cargar Sensores (GET /sensors)"):
     sensors_data = load_aranet_sensors(API_HEADERS)
     
     if sensors_data:
-        # La documentación indica que los sensores están en una clave 'sensors'
         if 'sensors' in sensors_data:
             df_sensors = pd.json_normalize(sensors_data['sensors'])
             st.success(f"¡Éxito! Se encontraron {len(df_sensors)} sensores.")
-            # Mostramos las columnas más importantes
             st.dataframe(df_sensors[['id', 'name', 'type', 'value', 'rssi', 'battery']])
             st.caption("Datos JSON completos:")
             st.json(sensors_data)
@@ -94,13 +133,12 @@ if st.button("Cargar Sensores (GET /sensors)"):
 st.divider()
 
 st.header("2. Cargar Últimas Mediciones")
-st.write("Presiona este botón para obtener la última lectura de todos los sensores. Busca el `sensorId` que anotaste en el paso 1.")
+st.write("Presiona este botón para obtener la última lectura de todos los sensores.")
 
 if st.button("Cargar Mediciones (GET /measurements/last)"):
     measurements_data = get_last_measurements(API_HEADERS)
     
     if measurements_data:
-        # La documentación indica que las mediciones están en una clave 'data'
         if 'data' in measurements_data:
             df_measure = pd.json_normalize(measurements_data['data'])
             st.success(f"¡Éxito! Se encontraron {len(df_measure)} mediciones.")
