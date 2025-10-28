@@ -1,189 +1,235 @@
 ## app.py
 import streamlit as st
 import plotly.graph_objects as go
-import psychrolib as psy
 import numpy as np
-import time
+import pandas as pd
+import psychrolib as psy
 
-# Importamos nuestras funciones de API personalizadas
-import aranet_utils
-
-# Configurar la biblioteca psicrométrica para usar unidades del Sistema Internacional (SI)
-psy.SetUnitSystem(psy.SI)
+# Importar nuestras nuevas funciones de utilidades
+import psychro_utils as psy_utils
 
 # --- Configuración de la Página ---
 st.set_page_config(
-    page_title="Análisis de Free Cooling (con API)",
+    page_title="Análisis de Free Cooling",
     page_icon="❄️",
     layout="wide"
 )
 
-st.title("❄️ Aplicación de Análisis de Free Cooling (Conectada a Aranet)")
-st.write("""
-Esta aplicación carga datos en vivo desde tu API de Aranet. 
-Selecciona tus sensores de aire interior y exterior en la barra lateral 
-para analizar el potencial de 'free cooling'.
-""")
+st.title("❄️ Aplicación de Análisis de Free Cooling")
 
-# --- Funciones de Cálculo y Gráfico (Las mismas de la versión manual) ---
-
-@st.cache_data
-def calculate_psychrometrics(tdb, rel_hum, pressure=101325):
-    """Calcula las propiedades psicrométricas a partir de Tdb y RH."""
-    if rel_hum is None or tdb is None:
-        return None
-    if rel_hum > 1.0:
-        rel_hum = rel_hum / 100.0
-
-    try:
-        results = psy.CalcPsychrometricsFromRelHum(tdb, rel_hum, pressure)
-        hum_ratio = results[0]
-        t_dew_point = results[1]
-        enthalpy = results[3] / 1000
-        return {
-            "Tdb": tdb, "RH": rel_hum * 100, "HumRatio_g_kg": hum_ratio * 1000,
-            "TDewPoint": t_dew_point, "Enthalpy_kJ_kg": enthalpy
-        }
-    except Exception:
-        return None
-
-@st.cache_data
-def plot_psychrometric_chart(internal_props, external_props):
-    """Dibuja el gráfico psicrométrico."""
-    fig = go.Figure()
-    temp_range = np.linspace(-10, 50, 61)
-    
-    # 1. Línea de Saturación (100% RH)
-    hum_ratio_100 = [psy.CalcPsychrometricsFromRelHum(t, 1.0, 101325)[0] * 1000 for t in temp_range]
-    fig.add_trace(go.Scatter(x=temp_range, y=hum_ratio_100, mode='lines', name='100% RH', line=dict(color='blue', width=3)))
-
-    # 2. Líneas de RH constantes
-    for rh in [80, 60, 40, 20]:
-        hum_ratio_rh = [psy.CalcPsychrometricsFromRelHum(t, rh / 100.0, 101325)[0] * 1000 for t in temp_range]
-        fig.add_trace(go.Scatter(x=temp_range, y=hum_ratio_rh, mode='lines', name=f'{rh}% RH', line=dict(color='rgba(100, 100, 100, 0.5)', width=1, dash='dot')))
-    
-    # 3. Punto de Aire Interior
-    if internal_props:
-        fig.add_trace(go.Scatter(
-            x=[internal_props['Tdb']], y=[internal_props['HumRatio_g_kg']],
-            mode='markers+text', name='Aire Interior', text=["<b>Interior</b>"],
-            textposition="top right", marker=dict(color='red', size=15, symbol='x')
-        ))
-
-    # 4. Punto de Aire Exterior
-    if external_props:
-        fig.add_trace(go.Scatter(
-            x=[external_props['Tdb']], y=[external_props['HumRatio_g_kg']],
-            mode='markers+text', name='Aire Exterior', text=["<b>Exterior</b>"],
-            textposition="bottom right", marker=dict(color='green', size=15, symbol='circle')
-        ))
-
-    fig.update_layout(
-        title="Gráfico Psicrométrico Interactivo",
-        xaxis_title="Temperatura de Bulbo Seco (Tdb) - °C",
-        yaxis_title="Relación de Humedad (g vapor / kg aire seco)",
-        xaxis=dict(range=[-10, 40]), yaxis=dict(range=[0, 30]), height=600
-    )
-    return fig
-
-# --- Carga de Datos de API ---
-with st.spinner('Cargando datos de la API de Aranet...'):
-    sensor_name_map = aranet_utils.load_sensors()
-    measurements = aranet_utils.get_processed_measurements()
-
-if not sensor_name_map or not measurements:
-    st.error("No se pudieron cargar los datos de la API. Verifica tu clave en 'secrets.toml' y la conexión.")
-    st.stop()
-
-# --- Barra Lateral de Entradas (Inputs) ---
-st.sidebar.header("Selección de Sensores 📡")
-
-# Creamos la lista de nombres de sensores para los menús
-sensor_names = list(sensor_name_map.keys())
-
-# Menú para el sensor INTERIOR
-selected_int_name = st.sidebar.selectbox(
-    "1. Selecciona el Sensor INTERIOR",
-    options=sensor_names,
-    index=0 # Por defecto selecciona el primero de la lista
+# --- SELECCIÓN DE MODO ---
+mode = st.radio(
+    "Selecciona el modo de análisis:",
+    ["Real-Time (API del Clima)", "Datos Históricos (Subir CSV)"],
+    horizontal=True,
+    label_visibility="collapsed"
 )
-# Obtenemos el ID del sensor interior seleccionado
-sensor_id_int = sensor_name_map[selected_int_name]
 
-# Menú para el sensor EXTERIOR
-selected_ext_name = st.sidebar.selectbox(
-    "2. Selecciona el Sensor EXTERIOR",
-    options=sensor_names,
-    index=1 # Por defecto selecciona el segundo de la lista
+# --- BARRA LATERAL (INPUTS COMUNES) ---
+st.sidebar.header("1. Define tus Condiciones INTERNAS")
+st.sidebar.write("Establece el punto de consigna deseado para tu edificio.")
+
+# Usamos los valores que discutimos (19-25C, 40-60% RH)
+t_int_db_slider = st.sidebar.slider(
+    "Temperatura Interior (Tdb)", 
+    min_value=18.0, max_value=26.0, value=22.0, step=0.5, format="%.1f °C"
 )
-# Obtenemos el ID del sensor exterior seleccionado
-sensor_id_ext = sensor_name_map[selected_ext_name]
+rh_int_slider = st.sidebar.slider(
+    "Humedad Interior (RH)", 
+    min_value=30.0, max_value=70.0, value=50.0, step=1.0, format="%.0f %%"
+)
 
-st.sidebar.info(f"Datos cargados para {len(measurements)} sensores.")
-if st.sidebar.button("Recargar Datos"):
-    st.cache_data.clear() # Limpia la caché
-    st.rerun() # Vuelve a ejecutar la app
+st.sidebar.header("2. Define tus Reglas de Free Cooling")
+st.sidebar.write("Establece los límites del AIRE EXTERIOR para activar el free cooling.")
 
-# --- Lógica Principal y Visualización ---
+# Usamos los valores por defecto que discutimos
+fc_rule_t_min = st.sidebar.slider(
+    "Temp. Exterior MÍNIMA (Tdb)",
+    min_value=5.0, max_value=15.0, value=12.0, step=0.5, format="%.1f °C"
+)
+fc_rule_t_max = st.sidebar.slider(
+    "Temp. Exterior MÁXIMA (Tdb)",
+    min_value=15.0, max_value=25.0, value=18.0, step=0.5, format="%.1f °C"
+)
+fc_rule_dp_max = st.sidebar.slider(
+    "Punto de Rocío Exterior MÁXIMO (TDewPoint)",
+    min_value=10.0, max_value=16.0, value=13.0, step=0.5, format="%.1f °C"
+)
 
-# Buscar los datos de los sensores seleccionados
-data_int = measurements.get(sensor_id_int, {})
-data_ext = measurements.get(sensor_id_ext, {})
+# Empaquetar las reglas
+fc_rules = {
+    "t_min": fc_rule_t_min,
+    "t_max": fc_rule_t_max,
+    "dp_max": fc_rule_dp_max
+}
 
-# Obtener T y RH (con .get() para evitar errores si falta la métrica)
-t_int_db = data_int.get("temperature")
-rh_int = data_int.get("humidity")
+# --- LÓGICA PRINCIPAL ---
 
-t_ext_db = data_ext.get("temperature")
-rh_ext = data_ext.get("humidity")
+# Calcular propiedades internas UNA VEZ
+props_int = psy_utils.calculate_psychrometrics(t_int_db_slider, rh_int_slider / 100.0)
 
-# Calcular propiedades
-props_int = calculate_psychrometrics(t_int_db, rh_int)
-props_ext = calculate_psychrometrics(t_ext_db, rh_ext)
+# -----------------------------------------------------------------
+# FUNCIÓN PARA EL MODO REAL-TIME
+# -----------------------------------------------------------------
+def run_realtime_app(props_int, fc_rules):
+    st.header("Análisis en Tiempo Real (API del Clima)")
+    
+    # Coordenadas de Barcelona por defecto
+    col_lat, col_lon = st.columns(2)
+    lat = col_lat.number_input("Latitud", value=41.38, format="%.4f")
+    lon = col_lon.number_input("Longitud", value=2.17, format="%.4f")
 
-# Dividir la página en columnas para métricas y recomendaciones
-col_metrics, col_recommendation = st.columns([1, 1])
+    with st.spinner("Cargando datos del clima en tiempo real..."):
+        weather_data = psy_utils.get_realtime_weather(lat, lon)
+    
+    if not weather_data:
+        st.error("No se pudieron cargar los datos del clima.")
+        st.stop()
 
-with col_metrics:
-    st.subheader("Métricas Calculadas")
-    if props_int and props_ext:
+    props_ext = psy_utils.calculate_psychrometrics(weather_data['Tdb'], weather_data['RH'])
+
+    if not props_ext:
+        st.error("Datos del clima inválidos recibidos de la API.")
+        st.stop()
+
+    # Dividir la página para métricas y recomendaciones
+    col_metrics, col_recommendation = st.columns([1, 1])
+
+    with col_metrics:
+        st.subheader("Métricas Calculadas")
         col_int, col_ext = st.columns(2)
         with col_int:
-            st.markdown(f"##### 🏠 INTERIOR ({selected_int_name})")
+            st.markdown("##### 🏠 INTERIOR (Objetivo)")
             st.metric("Temperatura", f"{props_int['Tdb']:.1f} °C")
             st.metric("Humedad", f"{props_int['RH']:.0f} %")
-            st.metric("Entalpía (Energía)", f"{props_int['Enthalpy_kJ_kg']:.1f} kJ/kg")
-
+            st.metric("Entalpía", f"{props_int['Enthalpy_kJ_kg']:.1f} kJ/kg")
         with col_ext:
-            st.markdown(f"##### 🌳 EXTERIOR ({selected_ext_name})")
+            st.markdown("##### 🌳 EXTERIOR (Actual)")
             st.metric("Temperatura", f"{props_ext['Tdb']:.1f} °C")
             st.metric("Humedad", f"{props_ext['RH']:.0f} %")
-            st.metric("Entalpía (Energía)", f"{props_ext['Enthalpy_kJ_kg']:.1f} kJ/kg")
-    else:
-        st.warning("Uno o ambos sensores seleccionados no reportan Temperatura y Humedad.")
+            st.metric("Entalpía", f"{props_ext['Enthalpy_kJ_kg']:.1f} kJ/kg")
 
-with col_recommendation:
-    st.subheader("Recomendación de Free Cooling")
-    if props_int and props_ext:
-        temp_diff = props_int['Tdb'] - props_ext['Tdb']
-        enthalpy_diff = props_int['Enthalpy_kJ_kg'] - props_ext['Enthalpy_kJ_kg']
-
-        # Reglas para Free Cooling
-        if (temp_diff > 2) and (enthalpy_diff > 4): 
-            st.success("✅ POTENCIAL DE FREE COOLING DETECTADO")
-            st.write(f"El aire exterior está **{temp_diff:.1f} °C más frío** y tiene **{enthalpy_diff:.1f} kJ/kg menos energía**.")
-            st.write("**Acción:** Se puede utilizar el aire exterior para enfriar.")
+    with col_recommendation:
+        st.subheader("Recomendación de Free Cooling")
+        status = psy_utils.check_free_cooling_potential(props_ext, props_int, fc_rules)
+        
+        if status == "✅ Potencial de Free Cooling":
+            st.success(status)
+            st.write("El aire exterior es adecuado para enfriar tu edificio.")
         else:
-            st.error("❌ FREE COOLING NO RECOMENDADO")
-            if temp_diff <= 2:
-                st.write("Razón: El aire exterior no está lo suficientemente frío.")
-            elif enthalpy_diff <= 4:
-                st.write("Razón: El aire exterior es demasiado húmedo (alta energía).")
-    else:
-        st.info("Esperando datos válidos de T/RH para ambos sensores...")
+            st.error(status)
+            st.write("El aire exterior no es óptimo. Se requiere A/C mecánico.")
 
-# Mostrar el gráfico psicrométrico
-if props_int and props_ext:
-    st.plotly_chart(plot_psychrometric_chart(props_int, props_ext), use_container_width=True)
+    # Dibujar el gráfico
+    fig = psy_utils.get_base_psychro_fig()
+    
+    # Añadir punto Interior
+    fig.add_trace(go.Scatter(
+        x=[props_int['Tdb']], y=[props_int['HumRatio_g_kg']],
+        mode='markers+text', name='Aire Interior (Objetivo)', text=["<b>Interior</b>"],
+        textposition="top right", marker=dict(color='red', size=15, symbol='x')
+    ))
+    
+    # Añadir punto Exterior
+    fig.add_trace(go.Scatter(
+        x=[props_ext['Tdb']], y=[props_ext['HumRatio_g_kg']],
+        mode='markers+text', name='Aire Exterior (Actual)', text=["<b>Exterior</b>"],
+        textposition="bottom right", marker=dict(color='green', size=15, symbol='circle')
+    ))
+    
+    st.plotly_chart(fig, use_container_width=True)
+
+# -----------------------------------------------------------------
+# FUNCIÓN PARA EL MODO DE DATOS HISTÓRICOS
+# -----------------------------------------------------------------
+def run_past_data_app(props_int, fc_rules):
+    st.header("Análisis de Datos Históricos (CSV)")
+    
+    uploaded_file = st.file_uploader(
+        "Sube tu archivo CSV de datos climáticos", 
+        type=["csv"]
+    )
+    
+    if uploaded_file is None:
+        st.info("Por favor, sube un archivo CSV para comenzar el análisis.")
+        st.warning("Tu CSV debe tener al menos una columna de Temperatura y una de Humedad Relativa.")
+        return
+
+    st.subheader("Mapeo de Columnas")
+    st.write("Indica a la aplicación qué columnas usar.")
+    
+    # Cargar una vista previa para la selección de columnas
+    try:
+        df_preview = pd.read_csv(uploaded_file, nrows=5)
+        available_cols = df_preview.columns.tolist()
+    except Exception as e:
+        st.error(f"No se pudo leer el archivo: {e}")
+        return
+
+    col1, col2 = st.columns(2)
+    with col1:
+        col_tdb_name = st.selectbox("Selecciona la columna de Temperatura (Tdb)", available_cols, index=0)
+    with col2:
+        col_rh_name = st.selectbox("Selecciona la columna de Humedad (RH)", available_cols, index=min(1, len(available_cols)-1))
+
+    if st.button("Procesar y Analizar Datos", type="primary"):
+        with st.spinner("Cargando y procesando todo el archivo CSV..."):
+            df = psy_utils.load_and_process_csv(uploaded_file, col_tdb_name, col_rh_name)
+        
+        if df.empty:
+            st.error("No se pudieron procesar datos. Verifica tu CSV y la selección de columnas.")
+            st.stop()
+            
+        st.success(f"Se procesaron {len(df)} filas de datos.")
+
+        # 2. Aplicar las reglas de Free Cooling
+        with st.spinner("Analizando potencial de free cooling para cada hora..."):
+            df['FreeCooling'] = df.apply(
+                lambda row: psy_utils.check_free_cooling_potential(row, props_int, fc_rules), 
+                axis=1
+            )
+        
+        # 3. Mostrar Resumen
+        fc_counts = df['FreeCooling'].value_counts(normalize=True) * 100
+        potential_pct = fc_counts.get("✅ Potencial de Free Cooling", 0.0)
+        
+        st.subheader("Resultados del Análisis")
+        st.metric("Potencial de Free Cooling Disponible", f"{potential_pct:.1f} % del tiempo")
+
+        # 4. Dibujar el Gráfico
+        with st.spinner("Generando gráfico..."):
+            fig = psy_utils.get_base_psychro_fig()
+
+            # Separar datos para el gráfico
+            df_yes = df[df['FreeCooling'] == "✅ Potencial de Free Cooling"]
+            df_no = df[df['FreeCooling'] == "❌ Sin Potencial"]
+
+            # Añadir puntos SIN potencial
+            fig.add_trace(go.Scatter(
+                x=df_no['Tdb'], y=df_no['HumRatio_g_kg'], mode='markers',
+                name='Sin Potencial',
+                marker=dict(color='orange', size=3, opacity=0.4)
+            ))
+            
+            # Añadir puntos CON potencial
+            fig.add_trace(go.Scatter(
+                x=df_yes['Tdb'], y=df_yes['HumRatio_g_kg'], mode='markers',
+                name='Free Cooling Disponible',
+                marker=dict(color='green', size=4, opacity=0.7)
+            ))
+            
+            # Añadir punto Interior
+            fig.add_trace(go.Scatter(
+                x=[props_int['Tdb']], y=[props_int['HumRatio_g_kg']],
+                mode='markers+text', name='Aire Interior (Objetivo)', text=["<b>Interior</b>"],
+                textposition="top right", marker=dict(color='red', size=15, symbol='x')
+            ))
+            
+            st.plotly_chart(fig, use_container_width=True)
+            st.dataframe(df.head())
+
+# --- Ejecutar el modo seleccionado ---
+if mode == "Real-Time (API del Clima)":
+    run_realtime_app(props_int, fc_rules)
 else:
-    st.error("No se puede dibujar el gráfico. Asegúrate de que los sensores seleccionados tengan datos de T y RH.")
+    run_past_data_app(props_int, fc_rules)
