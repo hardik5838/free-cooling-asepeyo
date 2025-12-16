@@ -93,7 +93,7 @@ with st.sidebar:
     st.subheader("Power Term Rates (€/kW/Year)")
     default_rates = pd.DataFrame({
         'Period': ['P1', 'P2', 'P3', 'P4', 'P5', 'P6'],
-        'Rate': [30.0, 20.0, 20.0, 15.0, 15.0, 15.0]
+        'Rate': [30.0, 25.0, 15.0, 12.0, 8.0, 4.0]
     })
     edited_rates = st.data_editor(default_rates, hide_index=True)
     rate_map = dict(zip(edited_rates['Period'], edited_rates['Rate']))
