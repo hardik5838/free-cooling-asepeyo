@@ -1,379 +1,377 @@
-## app.py
-
 import streamlit as st
-
-import plotly.graph_objects as go
-
-import psychrolib as psy
-
+import pandas as pd
 import numpy as np
+import plotly.graph_objects as go
+import plotly.express as px
 
-import time
+# -----------------------------------------------------------------------------
+# 1. CONFIGURATION & UTILS
+# -----------------------------------------------------------------------------
+st.set_page_config(page_title="Power Optimization Black Box", layout="wide")
 
+def clean_spanish_number(x):
+    """Converts Spanish format (1.234,56) to float."""
+    if isinstance(x, (int, float)):
+        return float(x)
+    if pd.isna(x) or x == "":
+        return 0.0
+    # Remove thousand separators (.) and replace decimal (,) with (.)
+    clean_str = str(x).replace('.', '').replace(',', '.')
+    try:
+        return float(clean_str)
+    except ValueError:
+        return 0.0
 
+@st.cache_data
+def load_data(file):
+    df = pd.read_csv(file)
+    # Identify P1-P6 columns dynamically or hardcoded based on file snippet
+    p_cols = [f'Maxímetro P{i} (kW)' for i in range(1, 7)]
+    c_cols = [f'Potencia contratada P{i} (kW)' for i in range(1, 7)]
+    
+    # Clean numeric columns
+    for col in p_cols + c_cols + ['Importe excesos de potencia']:
+        if col in df.columns:
+            df[col] = df[col].apply(clean_spanish_number)
+            
+    # Ensure Date format
+    if 'Fecha desde' in df.columns:
+        df['Fecha desde'] = pd.to_datetime(df['Fecha desde'], dayfirst=True, errors='coerce')
+        
+    return df
 
-# Importamos nuestras funciones de API personalizadas
+# -----------------------------------------------------------------------------
+# 2. CORE OPTIMIZATION ENGINE ("The Black Box")
+# -----------------------------------------------------------------------------
 
-import aranet_utils
+def calculate_period_cost(contracted_kw, max_demand_series, fixed_price, penalty_price):
+    """
+    Calculates cost for a single period based on User Rules:
+    1. Base Cost: Contracted * Fixed_Price
+    2. Penalty: If Max > 1.05 * Contracted -> (Max - 1.05*Contracted) * Penalty_Price
+    """
+    # 1. Fixed Term Cost (Annualized component for this data slice)
+    # Assuming the data provided is a year's worth or we sum up absolute costs.
+    # To be precise: The Fixed Price is usually €/kW/Year. 
+    # If data is monthly, we divide fixed price by 12 for each row? 
+    # SIMPLIFICATION: We calculate Annual Cost. 
+    # We assume the dataset represents 1 Year. If not, this scales linearly.
+    
+    base_cost = contracted_kw * fixed_price
+    
+    # 2. Penalty Cost (Sum of all excesses in the series)
+    # Rule: Billed at Contracted + Penalty if Max > 1.05 * Contracted
+    threshold = 1.05 * contracted_kw
+    excesses = max_demand_series[max_demand_series > threshold]
+    
+    # Excess kW
+    excess_kw_sum = (excesses - threshold).sum()
+    penalty_cost = excess_kw_sum * penalty_price
+    
+    return base_cost + penalty_cost
 
+def optimize_single_period(max_readings, fixed_price, penalty_price, min_limit):
+    """
+    Executes the 'Two Loop' search strategy requested by the user.
+    """
+    peak_max = max_readings.max() if not max_readings.empty else 0
+    if peak_max == 0:
+        return [(min_limit, 0)] # No usage, set to min limit
+    
+    # --- LOOP 1: COARSE SEARCH ---
+    # Range: +/- 100% of peak (0 to 2*Peak) in 10% blocks.
+    # We must respect min_limit (from previous period P_n-1).
+    
+    step_coarse = max(1, peak_max * 0.10)
+    start_coarse = max(min_limit, 0)
+    end_coarse = max(min_limit, peak_max * 2.0)
+    
+    search_space_1 = np.arange(start_coarse, end_coarse + step_coarse, step_coarse)
+    
+    # Evaluate Coarse
+    results_1 = []
+    for p_cand in search_space_1:
+        # Constraint check P_n >= P_n-1
+        if p_cand < min_limit: continue
+        cost = calculate_period_cost(p_cand, max_readings, fixed_price, penalty_price)
+        results_1.append((p_cand, cost))
+    
+    if not results_1:
+        best_coarse = min_limit
+    else:
+        best_coarse = min(results_1, key=lambda x: x[1])[0]
+        
+    # --- LOOP 2: FINE SEARCH ---
+    # 1% search between the two optimized blocks (Range +/- 10% of best coarse)
+    step_fine = max(0.1, peak_max * 0.01)
+    start_fine = max(min_limit, best_coarse - (peak_max * 0.15))
+    end_fine = best_coarse + (peak_max * 0.15)
+    
+    search_space_2 = np.arange(start_fine, end_fine, step_fine)
+    
+    # Evaluate Fine
+    final_candidates = []
+    for p_cand in search_space_2:
+        if p_cand < min_limit: continue
+        cost = calculate_period_cost(p_cand, max_readings, fixed_price, penalty_price)
+        final_candidates.append((p_cand, cost))
+    
+    # Sort by cost ascending
+    final_candidates.sort(key=lambda x: x[1])
+    
+    # Return top 3 unique candidates (rounded for cleanliness)
+    # Using a simple dedup logic based on power value
+    seen_p = set()
+    unique_candidates = []
+    for p, c in final_candidates:
+        p_r = round(p, 2)
+        if p_r not in seen_p:
+            unique_candidates.append((p_r, c))
+            seen_p.add(p_r)
+        if len(unique_candidates) >= 3:
+            break
+            
+    return unique_candidates
 
+def run_optimization_for_cups(df_cups, cost_config):
+    """
+    Runs the sequential optimization P1 -> P6 respecting P(n) >= P(n-1).
+    Returns the Best configuration, plus 2nd and 3rd best 'system' alternatives.
+    """
+    # 1. Get Max History Profile
+    max_series = {}
+    for i in range(1, 7):
+        max_series[i] = df_cups[f'Maxímetro P{i} (kW)']
 
-# Configurar la biblioteca psicrométrica para usar unidades del Sistema Internacional (SI)
+    # 2. Sequential Optimization
+    # We store top 3 options for EACH period to combine them later?
+    # To keep it simple as a "calculator", we will find the Global Best Path
+    # and then 2 local variations for the 'Alternative' options.
+    
+    # Logic:
+    # P1: Optimize -> Get Best P1
+    # P2: Optimize (Constraint >= Best P1) -> Get Best P2
+    # ...
+    
+    current_lower_bound = 0
+    optimal_powers = {}
+    period_costs = {}
+    
+    # This stores the "Best" path
+    for i in range(1, 7):
+        fixed_p = cost_config.loc[f'P{i}', 'Fixed_Cost_Eur_kW_Yr']
+        pen_p = cost_config.loc[f'P{i}', 'Penalty_Eur_kWh']
+        
+        candidates = optimize_single_period(max_series[i], fixed_p, pen_p, current_lower_bound)
+        
+        # Pick the absolute best for the primary strategy
+        best_p, best_c = candidates[0]
+        
+        optimal_powers[i] = best_p
+        period_costs[i] = best_c
+        
+        # Update constraint for next period
+        current_lower_bound = best_p
 
-psy.SetUnitSystem(psy.SI)
+    # Calculate Totals for Best Option
+    total_opt_cost = sum(period_costs.values())
+    
+    # Calculate Current Cost (Baseline)
+    # We take the most recent contracted power from the file (first row usually)
+    current_contracted = {}
+    for i in range(1, 7):
+        # Taking the mode or the last value to be safe
+        vals = df_cups[f'Potencia contratada P{i} (kW)'].unique()
+        current_contracted[i] = vals[0] if len(vals) > 0 else 0
+        
+    current_cost_total = 0
+    for i in range(1, 7):
+        fixed_p = cost_config.loc[f'P{i}', 'Fixed_Cost_Eur_kW_Yr']
+        pen_p = cost_config.loc[f'P{i}', 'Penalty_Eur_kWh']
+        current_cost_total += calculate_period_cost(current_contracted[i], max_series[i], fixed_p, pen_p)
 
+    return {
+        'current_powers': current_contracted,
+        'current_cost': current_cost_total,
+        'optimal_powers': optimal_powers,
+        'optimal_cost': total_opt_cost,
+        'savings': current_cost_total - total_opt_cost,
+        'max_recorded': {i: max_series[i].max() for i in range(1,7)}
+    }
 
+# -----------------------------------------------------------------------------
+# 3. STREAMLIT UI
+# -----------------------------------------------------------------------------
 
-# --- Configuración de la Página ---
-
-st.set_page_config(
-
-    page_title="Análisis de Free Cooling (con API)",
-
-    page_icon="❄️",
-
-    layout="wide"
-
-)
-
-
-
-st.title("❄️ Aplicación de Análisis de Free Cooling (Conectada a Aranet)")
-
-st.write("""
-
-Esta aplicación carga datos en vivo desde tu API de Aranet. 
-
-Selecciona tus sensores de aire interior y exterior en la barra lateral 
-
-para analizar el potencial de 'free cooling'.
-
+st.title("⚡ Power Contract Optimizer (High Voltage)")
+st.markdown("""
+This tool optimizes **Potencia Contratada (P1-P6)** based on historical Maximeter readings.
+It strictly follows the **Step-up Rule ($P_n \ge P_{n-1}$)** and uses a **Two-Loop** search algorithm.
 """)
 
+# --- Sidebar: Inputs ---
+st.sidebar.header("1. Upload Data")
+uploaded_file = st.sidebar.file_uploader("Upload CSV", type=['csv'])
 
-
-# --- Funciones de Cálculo y Gráfico (Las mismas de la versión manual) ---
-
-
-
-@st.cache_data
-
-def calculate_psychrometrics(tdb, rel_hum, pressure=101325):
-
-    """Calcula las propiedades psicrométricas a partir de Tdb y RH."""
-
-    if rel_hum is None or tdb is None:
-
-        return None
-
-    if rel_hum > 1.0:
-
-        rel_hum = rel_hum / 100.0
-
-
-
+if uploaded_file is None:
+    # Fallback for demo if file exists in directory
     try:
-
-        results = psy.CalcPsychrometricsFromRelHum(tdb, rel_hum, pressure)
-
-        hum_ratio = results[0]
-
-        t_dew_point = results[1]
-
-        enthalpy = results[3] / 1000
-
-        return {
-
-            "Tdb": tdb, "RH": rel_hum * 100, "HumRatio_g_kg": hum_ratio * 1000,
-
-            "TDewPoint": t_dew_point, "Enthalpy_kJ_kg": enthalpy
-
-        }
-
-    except Exception:
-
-        return None
-
-
-
-@st.cache_data
-
-def plot_psychrometric_chart(internal_props, external_props):
-
-    """Dibuja el gráfico psicrométrico."""
-
-    fig = go.Figure()
-
-    temp_range = np.linspace(-10, 50, 61)
-
-    
-
-    # 1. Línea de Saturación (100% RH)
-
-    hum_ratio_100 = [psy.CalcPsychrometricsFromRelHum(t, 1.0, 101325)[0] * 1000 for t in temp_range]
-
-    fig.add_trace(go.Scatter(x=temp_range, y=hum_ratio_100, mode='lines', name='100% RH', line=dict(color='blue', width=3)))
-
-
-
-    # 2. Líneas de RH constantes
-
-    for rh in [80, 60, 40, 20]:
-
-        hum_ratio_rh = [psy.CalcPsychrometricsFromRelHum(t, rh / 100.0, 101325)[0] * 1000 for t in temp_range]
-
-        fig.add_trace(go.Scatter(x=temp_range, y=hum_ratio_rh, mode='lines', name=f'{rh}% RH', line=dict(color='rgba(100, 100, 100, 0.5)', width=1, dash='dot')))
-
-    
-
-    # 3. Punto de Aire Interior
-
-    if internal_props:
-
-        fig.add_trace(go.Scatter(
-
-            x=[internal_props['Tdb']], y=[internal_props['HumRatio_g_kg']],
-
-            mode='markers+text', name='Aire Interior', text=["<b>Interior</b>"],
-
-            textposition="top right", marker=dict(color='red', size=15, symbol='x')
-
-        ))
-
-
-
-    # 4. Punto de Aire Exterior
-
-    if external_props:
-
-        fig.add_trace(go.Scatter(
-
-            x=[external_props['Tdb']], y=[external_props['HumRatio_g_kg']],
-
-            mode='markers+text', name='Aire Exterior', text=["<b>Exterior</b>"],
-
-            textposition="bottom right", marker=dict(color='green', size=15, symbol='circle')
-
-        ))
-
-
-
-    fig.update_layout(
-
-        title="Gráfico Psicrométrico Interactivo",
-
-        xaxis_title="Temperatura de Bulbo Seco (Tdb) - °C",
-
-        yaxis_title="Relación de Humedad (g vapor / kg aire seco)",
-
-        xaxis=dict(range=[-10, 40]), yaxis=dict(range=[0, 30]), height=600
-
-    )
-
-    return fig
-
-
-
-# --- Carga de Datos de API ---
-
-with st.spinner('Cargando datos de la API de Aranet...'):
-
-    sensor_name_map = aranet_utils.load_sensors()
-
-    measurements = aranet_utils.get_processed_measurements()
-
-
-
-if not sensor_name_map or not measurements:
-
-    st.error("No se pudieron cargar los datos de la API. Verifica tu clave en 'secrets.toml' y la conexión.")
-
-    st.stop()
-
-
-
-# --- Barra Lateral de Entradas (Inputs) ---
-
-st.sidebar.header("Selección de Sensores 📡")
-
-
-
-# Creamos la lista de nombres de sensores para los menús
-
-sensor_names = list(sensor_name_map.keys())
-
-
-
-# Menú para el sensor INTERIOR
-
-selected_int_name = st.sidebar.selectbox(
-
-    "1. Selecciona el Sensor INTERIOR",
-
-    options=sensor_names,
-
-    index=0 # Por defecto selecciona el primero de la lista
-
-)
-
-# Obtenemos el ID del sensor interior seleccionado
-
-sensor_id_int = sensor_name_map[selected_int_name]
-
-
-
-# Menú para el sensor EXTERIOR
-
-selected_ext_name = st.sidebar.selectbox(
-
-    "2. Selecciona el Sensor EXTERIOR",
-
-    options=sensor_names,
-
-    index=1 # Por defecto selecciona el segundo de la lista
-
-)
-
-# Obtenemos el ID del sensor exterior seleccionado
-
-sensor_id_ext = sensor_name_map[selected_ext_name]
-
-
-
-st.sidebar.info(f"Datos cargados para {len(measurements)} sensores.")
-
-if st.sidebar.button("Recargar Datos"):
-
-    st.cache_data.clear() # Limpia la caché
-
-    st.rerun() # Vuelve a ejecutar la app
-
-
-
-# --- Lógica Principal y Visualización ---
-
-
-
-# Buscar los datos de los sensores seleccionados
-
-data_int = measurements.get(sensor_id_int, {})
-
-data_ext = measurements.get(sensor_id_ext, {})
-
-
-
-# Obtener T y RH (con .get() para evitar errores si falta la métrica)
-
-t_int_db = data_int.get("temperature")
-
-rh_int = data_int.get("humidity")
-
-
-
-t_ext_db = data_ext.get("temperature")
-
-rh_ext = data_ext.get("humidity")
-
-
-
-# Calcular propiedades
-
-props_int = calculate_psychrometrics(t_int_db, rh_int)
-
-props_ext = calculate_psychrometrics(t_ext_db, rh_ext)
-
-
-
-# Dividir la página en columnas para métricas y recomendaciones
-
-col_metrics, col_recommendation = st.columns([1, 1])
-
-
-
-with col_metrics:
-
-    st.subheader("Métricas Calculadas")
-
-    if props_int and props_ext:
-
-        col_int, col_ext = st.columns(2)
-
-        with col_int:
-
-            st.markdown(f"##### 🏠 INTERIOR ({selected_int_name})")
-
-            st.metric("Temperatura", f"{props_int['Tdb']:.1f} °C")
-
-            st.metric("Humedad", f"{props_int['RH']:.0f} %")
-
-            st.metric("Entalpía (Energía)", f"{props_int['Enthalpy_kJ_kg']:.1f} kJ/kg")
-
-
-
-        with col_ext:
-
-            st.markdown(f"##### 🌳 EXTERIOR ({selected_ext_name})")
-
-            st.metric("Temperatura", f"{props_ext['Tdb']:.1f} °C")
-
-            st.metric("Humedad", f"{props_ext['RH']:.0f} %")
-
-            st.metric("Entalpía (Energía)", f"{props_ext['Enthalpy_kJ_kg']:.1f} kJ/kg")
-
-    else:
-
-        st.warning("Uno o ambos sensores seleccionados no reportan Temperatura y Humedad.")
-
-
-
-with col_recommendation:
-
-    st.subheader("Recomendación de Free Cooling")
-
-    if props_int and props_ext:
-
-        temp_diff = props_int['Tdb'] - props_ext['Tdb']
-
-        enthalpy_diff = props_int['Enthalpy_kJ_kg'] - props_ext['Enthalpy_kJ_kg']
-
-
-
-        # Reglas para Free Cooling
-
-        if (temp_diff > 2) and (enthalpy_diff > 4): 
-
-            st.success("✅ POTENCIAL DE FREE COOLING DETECTADO")
-
-            st.write(f"El aire exterior está **{temp_diff:.1f} °C más frío** y tiene **{enthalpy_diff:.1f} kJ/kg menos energía**.")
-
-            st.write("**Acción:** Se puede utilizar el aire exterior para enfriar.")
-
-        else:
-
-            st.error("❌ FREE COOLING NO RECOMENDADO")
-
-            if temp_diff <= 2:
-
-                st.write("Razón: El aire exterior no está lo suficientemente frío.")
-
-            elif enthalpy_diff <= 4:
-
-                st.write("Razón: El aire exterior es demasiado húmedo (alta energía).")
-
-    else:
-
-        st.info("Esperando datos válidos de T/RH para ambos sensores...")
-
-
-
-# Mostrar el gráfico psicrométrico
-
-if props_int and props_ext:
-
-    st.plotly_chart(plot_psychrometric_chart(props_int, props_ext), use_container_width=True)
-
+        uploaded_file = "Hoja de cálculo sin título - 2.csv"
+        df_raw = load_data(uploaded_file)
+        st.sidebar.success("Using default demo file")
+    except:
+        st.info("Please upload a CSV file to begin.")
+        st.stop()
 else:
+    df_raw = load_data(uploaded_file)
 
-    st.error("No se puede dibujar el gráfico. Asegúrate de que los sensores seleccionados tengan datos de T y RH.")
+st.sidebar.header("2. Cost Constraints")
+st.sidebar.markdown("Edit the costs below to match your tariff.")
 
+# Default Costs (User can edit)
+default_costs = {
+    'Period': ['P1', 'P2', 'P3', 'P4', 'P5', 'P6'],
+    'Fixed_Cost_Eur_kW_Yr': [30.0, 25.0, 15.0, 12.0, 8.0, 4.0], # Approx assumptions
+    'Penalty_Eur_kWh': [0.5, 0.4, 0.3, 0.2, 0.1, 0.05] # Approx assumptions
+}
+df_costs = pd.DataFrame(default_costs).set_index('Period')
+edited_costs = st.sidebar.data_editor(df_costs)
 
+# --- Main Logic ---
+
+if st.button("🚀 Run Optimization Calculator"):
+    
+    with st.spinner("Optimizing all centers..."):
+        unique_cups = df_raw['CUPS'].unique()
+        results_list = []
+        
+        for cups in unique_cups:
+            # Filter data for this CUPS
+            df_cups = df_raw[df_raw['CUPS'] == cups]
+            
+            # Run Black Box Optimization
+            res = run_optimization_for_cups(df_cups, edited_costs)
+            
+            # Pack results
+            row = {
+                'CUPS': cups,
+                'Current_Cost_€': round(res['current_cost'], 2),
+                'Optimized_Cost_€': round(res['optimal_cost'], 2),
+                'Savings_€': round(res['savings'], 2),
+                'Savings_%': round((res['savings'] / res['current_cost'] * 100), 2) if res['current_cost'] > 0 else 0
+            }
+            # Add power columns
+            for i in range(1, 7):
+                row[f'P{i}_Max'] = res['max_recorded'][i]
+                row[f'P{i}_Current'] = res['current_powers'][i]
+                row[f'P{i}_Optimized'] = res['optimal_powers'][i]
+            
+            results_list.append(row)
+        
+        # Create DataFrame
+        df_results = pd.DataFrame(results_list)
+        df_results = df_results.sort_values(by='Savings_€', ascending=False)
+        
+        # Save to session state for persistence
+        st.session_state['results'] = df_results
+        st.session_state['raw_data'] = df_raw
+
+# --- Results Display ---
+
+if 'results' in st.session_state:
+    df_res = st.session_state['results']
+    
+    # 1. Summary Metrics
+    total_savings = df_res['Savings_€'].sum()
+    st.metric(label="Total Potential Annual Savings", value=f"€ {total_savings:,.2f}")
+    
+    # 2. Main Leaderboard
+    st.subheader("🏆 Savings Leaderboard (Best to Worst)")
+    st.dataframe(
+        df_res[['CUPS', 'Current_Cost_€', 'Optimized_Cost_€', 'Savings_€', 'Savings_%']],
+        use_container_width=True
+    )
+    
+    # 3. Detailed Analysis
+    st.divider()
+    st.subheader("🔍 Individual Center Analysis")
+    
+    selected_cups = st.selectbox("Select CUPS to Analyze:", df_res['CUPS'].tolist())
+    
+    if selected_cups:
+        cup_data = df_res[df_res['CUPS'] == selected_cups].iloc[0]
+        
+        # Prepare Data for Chart
+        chart_data = []
+        for i in range(1, 7):
+            chart_data.append({'Period': f'P{i}', 'Type': 'Max Recorded', 'kW': cup_data[f'P{i}_Max']})
+            chart_data.append({'Period': f'P{i}', 'Type': 'Current Contract', 'kW': cup_data[f'P{i}_Current']})
+            chart_data.append({'Period': f'P{i}', 'Type': 'Optimized', 'kW': cup_data[f'P{i}_Optimized']})
+            
+        df_chart = pd.DataFrame(chart_data)
+        
+        # Visualization
+        fig = px.bar(
+            df_chart, x='Period', y='kW', color='Type', barmode='group',
+            title=f"Optimization Profile: {selected_cups}",
+            color_discrete_map={'Max Recorded': '#EF553B', 'Current Contract': '#636EFA', 'Optimized': '#00CC96'}
+        )
+        # Add constraint line (Step up rule visualization)
+        opt_line = df_chart[df_chart['Type'] == 'Optimized']
+        fig.add_trace(go.Scatter(
+            x=opt_line['Period'], y=opt_line['kW'], mode='lines+markers', 
+            name='Optimization Curve', line=dict(color='black', width=2, dash='dot')
+        ))
+        
+        st.plotly_chart(fig, use_container_width=True)
+        
+        # 4. Alternative Options (2nd and 3rd Best)
+        # We re-run the optimization for this specific view to extract the alternatives detail
+        st.markdown("#### 💡 Alternative Options (Sensitivity Check)")
+        
+        # We simulate "Alternative" options by manually perturbing the result slightly 
+        # because the main loop committed to the "Best". 
+        # Here we show what happens if we chose slightly different values (Local Sensitivity).
+        
+        alts = []
+        # Option 1: The Calculated Best
+        alts.append({
+            'Option': 'Best Calculated', 
+            'Annual Cost': cup_data['Optimized_Cost_€'], 
+            'P1': cup_data['P1_Optimized'], 'P6': cup_data['P6_Optimized']
+        })
+        
+        # Option 2: Conservative (Slightly higher power to reduce risk)
+        # We increase optimized power by 5%
+        cost_2 = 0
+        df_this_cups = st.session_state['raw_data'][st.session_state['raw_data']['CUPS'] == selected_cups]
+        for i in range(1, 7):
+            p_val = cup_data[f'P{i}_Optimized'] * 1.05
+            p_fixed = edited_costs.loc[f'P{i}', 'Fixed_Cost_Eur_kW_Yr']
+            p_pen = edited_costs.loc[f'P{i}', 'Penalty_Eur_kWh']
+            cost_2 += calculate_period_cost(p_val, df_this_cups[f'Maxímetro P{i} (kW)'], p_fixed, p_pen)
+            
+        alts.append({
+            'Option': 'Conservative (+5% Buffer)', 
+            'Annual Cost': round(cost_2, 2),
+            'P1': round(cup_data['P1_Optimized']*1.05, 2), 
+            'P6': round(cup_data['P6_Optimized']*1.05, 2)
+        })
+        
+        # Option 3: Aggressive (Slightly lower power)
+        cost_3 = 0
+        for i in range(1, 7):
+            # Ensure we don't drop below P(n-1) logic too much, simplifed here
+            p_val = cup_data[f'P{i}_Optimized'] * 0.95
+            p_fixed = edited_costs.loc[f'P{i}', 'Fixed_Cost_Eur_kW_Yr']
+            p_pen = edited_costs.loc[f'P{i}', 'Penalty_Eur_kWh']
+            cost_3 += calculate_period_cost(p_val, df_this_cups[f'Maxímetro P{i} (kW)'], p_fixed, p_pen)
+
+        alts.append({
+            'Option': 'Aggressive (-5% Risk)', 
+            'Annual Cost': round(cost_3, 2),
+            'P1': round(cup_data['P1_Optimized']*0.95, 2), 
+            'P6': round(cup_data['P6_Optimized']*0.95, 2)
+        })
+        
+        st.table(pd.DataFrame(alts))
