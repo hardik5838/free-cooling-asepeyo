@@ -6,25 +6,24 @@ import plotly.express as px
 # -----------------------------------------------------------------------------
 # 1. SETUP & CONFIG
 # -----------------------------------------------------------------------------
-st.set_page_config(page_title="Power Opti-BlackBox (Final)", layout="wide")
+st.set_page_config(page_title="Power Opti-BlackBox (Stable)", layout="wide")
 st.title("🧮 Power Contract Optimization (Black Box)")
 
 def clean_number(x):
     """
-    Robust cleaner. 
-    If user manually changed to dots, this handles it.
-    If some commas remain, this handles it too.
+    Robust cleaner. Handles 1.234,56 OR 1234.56
     """
     if pd.isna(x) or str(x).strip() == "": return 0.0
     if isinstance(x, (int, float)): return float(x)
     
     s = str(x).strip()
-    # If it looks like "1.234,56" -> remove dot, replace comma
+    # If "1.234,56" (Spanis) -> remove dot, replace comma
     if '.' in s and ',' in s:
         s = s.replace('.', '').replace(',', '.')
-    # If it looks like "1,23" -> replace comma
+    # If "1,23" (Spanish simple) -> replace comma
     elif ',' in s:
         s = s.replace(',', '.')
+    # If "1.23" (English/Manual) -> keep as is
     
     try: return float(s)
     except: return 0.0
@@ -37,15 +36,14 @@ def load_data(file):
     col_map = {}
     cols = df.columns
     for i in range(1, 7):
-        # Flexible search for "Max P1", "Maxímetro P1", etc.
+        # Flexible search
         max_c = [c for c in cols if f'P{i}' in c and ('Max' in c or 'max' in c)]
         con_c = [c for c in cols if f'P{i}' in c and ('Potencia' in c or 'Con' in c)]
         
         if max_c: col_map[f'max_p{i}'] = max_c[0]
         if con_c: col_map[f'con_p{i}'] = con_c[0]
     
-    # Clean numeric columns
-    # We also look for "Importe excesos" to get the REAL fines paid
+    # Look for "Importe excesos" to get the REAL fines paid
     imp_col = [c for c in cols if 'Importe' in c and 'excesos' in c]
     if imp_col:
         col_map['importe'] = imp_col[0]
@@ -84,7 +82,7 @@ def simulate_penalty_cost(contracted_map, max_series_map, penalty_price):
 # -----------------------------------------------------------------------------
 with st.sidebar:
     st.header("1. Upload Data")
-    uploaded_file = st.file_uploader("Upload Cleaned CSV", type=['csv'])
+    uploaded_file = st.file_uploader("Upload CSV (Manual or Raw)", type=['csv'])
     
     st.header("2. Costs & Rates")
     
@@ -95,7 +93,7 @@ with st.sidebar:
     st.subheader("Power Term Rates (€/kW/Year)")
     default_rates = pd.DataFrame({
         'Period': ['P1', 'P2', 'P3', 'P4', 'P5', 'P6'],
-        'Rate': [30.0, 25.0, 15.0, 12.0, 8.0, 4.0]
+        'Rate': [30.0, 20.0, 20.0, 15.0, 15.0, 15.0]
     })
     edited_rates = st.data_editor(default_rates, hide_index=True)
     rate_map = dict(zip(edited_rates['Period'], edited_rates['Rate']))
@@ -106,7 +104,7 @@ with st.sidebar:
         "Estimated Penalty Cost (€/Excess kW)", 
         value=1.50, 
         step=0.1,
-        help="Used to simulate future penalties. Real penalties are taken from CSV if available."
+        help="Used to simulate future penalties."
     )
     
     run_btn = st.button("RUN OPTIMIZER", type="primary")
@@ -139,11 +137,9 @@ if uploaded_file and run_btn:
         curr_fixed = calculate_fixed_cost(curr_powers, rate_map, base_rate_input)
         
         # 2. Get REAL Penalty (Current)
-        # We trust the CSV 'Importe excesos' column for the "Before" state
         if col_map['importe']:
             curr_penalty = df_c[col_map['importe']].sum()
         else:
-            # Fallback if column missing
             curr_penalty = simulate_penalty_cost(curr_powers, max_series, penalty_input)
             
         total_curr = curr_fixed + curr_penalty
@@ -160,7 +156,7 @@ if uploaded_file and run_btn:
             
             # --- Loop 1: Coarse (10% steps) ---
             start = min_limit
-            end = max(min_limit, peak * 2.5) # Wider range
+            end = max(min_limit, peak * 2.5)
             step = max(1.0, peak * 0.1)
             
             candidates_1 = np.arange(start, end + step, step)
@@ -169,7 +165,6 @@ if uploaded_file and run_btn:
             min_cost_c = float('inf')
             
             def check_cost(p, idx):
-                # Local period cost function
                 f = p * rate_map[f'P{idx}']
                 limit = 1.05 * p
                 exc = max_series[idx][max_series[idx] > limit] - limit
@@ -206,8 +201,7 @@ if uploaded_file and run_btn:
         opt_penalty = simulate_penalty_cost(best_powers, max_series, penalty_input)
         total_opt = opt_fixed + opt_penalty
         
-        # Safety Option (2nd best check)
-        # Just +5% buffer
+        # Safety Option (+5%)
         safe_powers = {k: round(v*1.05, 2) for k,v in best_powers.items()}
         safe_fixed = calculate_fixed_cost(safe_powers, rate_map, base_rate_input)
         safe_penalty = simulate_penalty_cost(safe_powers, max_series, penalty_input)
@@ -227,6 +221,8 @@ if uploaded_file and run_btn:
         bar.progress((idx+1)/len(cups_list))
         
     df_res = pd.DataFrame(results).sort_values('Savings', ascending=False)
+    # SAFETY: Fill NaNs to prevent formatting crashes
+    df_res = df_res.fillna(0.0)
     
     # -------------------------------------------------------------------------
     # 4. OUTPUTS
@@ -238,9 +234,20 @@ if uploaded_file and run_btn:
     col3.metric("Centers Analyzed", len(df_res))
     
     st.subheader("🏆 Results (Real Current Cost vs Optimized)")
+    
+    # SAFE DATAFRAME DISPLAY
+    # We apply formatting specifically to numeric columns only
+    format_dict = {
+        'Current_Cost': "€ {:,.2f}",
+        'Optimized_Cost': "€ {:,.2f}",
+        'Savings': "€ {:,.2f}",
+        'Real_Penalty_Paid': "€ {:,.2f}",
+        'Simulated_New_Penalty': "€ {:,.2f}"
+    }
+    
     st.dataframe(
         df_res[['CUPS', 'Current_Cost', 'Optimized_Cost', 'Savings', 'Real_Penalty_Paid', 'Simulated_New_Penalty']]
-        .style.format("€ {:,.2f}"),
+        .style.format(format_dict),
         use_container_width=True
     )
     
