@@ -6,247 +6,272 @@ import plotly.express as px
 # -----------------------------------------------------------------------------
 # 1. SETUP & CONFIG
 # -----------------------------------------------------------------------------
-st.set_page_config(page_title="Power Opti-BlackBox", layout="wide")
+st.set_page_config(page_title="Power Opti-BlackBox (Final)", layout="wide")
 st.title("🧮 Power Contract Optimization (Black Box)")
 
-def clean_spanish_number(x):
-    """Converts 1.234,56 -> 1234.56 robustly."""
+def clean_number(x):
+    """
+    Robust cleaner. 
+    If user manually changed to dots, this handles it.
+    If some commas remain, this handles it too.
+    """
     if pd.isna(x) or str(x).strip() == "": return 0.0
-    s = str(x).replace('.', '').replace(',', '.')
+    if isinstance(x, (int, float)): return float(x)
+    
+    s = str(x).strip()
+    # If it looks like "1.234,56" -> remove dot, replace comma
+    if '.' in s and ',' in s:
+        s = s.replace('.', '').replace(',', '.')
+    # If it looks like "1,23" -> replace comma
+    elif ',' in s:
+        s = s.replace(',', '.')
+    
     try: return float(s)
     except: return 0.0
 
 @st.cache_data
 def load_data(file):
     df = pd.read_csv(file)
-    # Auto-detect columns
+    
+    # Map Columns
     col_map = {}
+    cols = df.columns
     for i in range(1, 7):
-        cols = df.columns
+        # Flexible search for "Max P1", "Maxímetro P1", etc.
         max_c = [c for c in cols if f'P{i}' in c and ('Max' in c or 'max' in c)]
         con_c = [c for c in cols if f'P{i}' in c and ('Potencia' in c or 'Con' in c)]
+        
         if max_c: col_map[f'max_p{i}'] = max_c[0]
         if con_c: col_map[f'con_p{i}'] = con_c[0]
+    
+    # Clean numeric columns
+    # We also look for "Importe excesos" to get the REAL fines paid
+    imp_col = [c for c in cols if 'Importe' in c and 'excesos' in c]
+    if imp_col:
+        col_map['importe'] = imp_col[0]
+    else:
+        col_map['importe'] = None
         
-    # Clean Numbers
-    targets = list(col_map.values()) + ['Importe excesos de potencia']
+    targets = list(col_map.values())
+    targets = [t for t in targets if t is not None]
+    
     for c in targets:
-        if c in df.columns:
-            df[c] = df[c].apply(clean_spanish_number)
+        df[c] = df[c].apply(clean_number)
             
     return df, col_map
 
-def calculate_scenario_cost(contracted_p1_p6, max_series_dict, prices_p1_p6, base_rate, penalty_coef):
-    """
-    Calculates Total Cost = (Fixed Power Cost) + (Simulated Fines) + Base Rate
-    """
-    # 1. Fixed Power Cost
-    fixed_cost = 0
+def calculate_fixed_cost(contracted_map, prices_map, base_rate):
+    """Calculates ONLY the Fixed Power Term Cost."""
+    cost = base_rate
     for i in range(1, 7):
-        fixed_cost += contracted_p1_p6[i] * prices_p1_p6[f'P{i}']
-    
-    fixed_cost += base_rate
-    
-    # 2. Simulated Fines
-    simulated_fine = 0
+        p_val = contracted_map.get(i, 0)
+        cost += p_val * prices_map.get(f'P{i}', 0)
+    return cost
+
+def simulate_penalty_cost(contracted_map, max_series_map, penalty_price):
+    """Simulates penalties for the Optimized scenario."""
+    total_penalty = 0
     for i in range(1, 7):
-        max_vals = max_series_dict[i]
-        limit = 1.05 * contracted_p1_p6[i]
-        
-        # Calculate excess vector
-        excesses = max_vals[max_vals > limit]
-        excess_kw_sum = (excesses - limit).sum()
-        
-        simulated_fine += excess_kw_sum * penalty_coef
-        
-    return fixed_cost + simulated_fine
+        limit = 1.05 * contracted_map[i]
+        series = max_series_map[i]
+        # Excess calculation
+        excess = series[series > limit] - limit
+        total_penalty += excess.sum() * penalty_price
+    return total_penalty
 
 # -----------------------------------------------------------------------------
-# 2. STREAMLIT INTERFACE (INPUTS)
+# 2. INPUTS (SIDEBAR)
 # -----------------------------------------------------------------------------
-
 with st.sidebar:
-    st.header("1. Data Feed")
-    uploaded_file = st.file_uploader("Upload CSV", type=['csv'])
+    st.header("1. Upload Data")
+    uploaded_file = st.file_uploader("Upload Cleaned CSV", type=['csv'])
     
-    st.header("2. Rates Configuration")
+    st.header("2. Costs & Rates")
     
-    # A. Fixed Base Rate
-    base_rate_input = st.number_input("Base Rate (Fixed) €/Year", value=0.0, step=10.0, 
-                                      help="Any fixed annual management fee per contract.")
+    # Input 1: Base Rate
+    base_rate_input = st.number_input("Base Rate (Fixed Fee) €/Year", value=0.0, step=10.0)
     
-    # B. Period Rates
-    st.subheader("Period Rates (Fixed Term)")
-    st.caption("Price per kW per Year (€/kW/yr)")
+    # Input 2: Period Rates
+    st.subheader("Power Term Rates (€/kW/Year)")
     default_rates = pd.DataFrame({
         'Period': ['P1', 'P2', 'P3', 'P4', 'P5', 'P6'],
-        'Rate (€/kW)': [30.0, 25.0, 15.0, 12.0, 8.0, 4.0]
+        'Rate': [30.0, 25.0, 15.0, 12.0, 8.0, 4.0]
     })
     edited_rates = st.data_editor(default_rates, hide_index=True)
-    rate_map = dict(zip(edited_rates['Period'], edited_rates['Rate (€/kW)']))
+    rate_map = dict(zip(edited_rates['Period'], edited_rates['Rate']))
     
-    # C. Penalty Factor (THE OVERRIDE)
+    # Input 3: Penalty Factor
     st.subheader("Penalty Factor")
     penalty_input = st.number_input(
-        "Excess Penalty Cost (€ per Excess kW)", 
-        value=1.50, # Set a reasonable market default
-        step=0.10,
-        format="%.2f",
-        help="Cost for every kW that exceeds 105% of contracted power."
+        "Estimated Penalty Cost (€/Excess kW)", 
+        value=1.50, 
+        step=0.1,
+        help="Used to simulate future penalties. Real penalties are taken from CSV if available."
     )
     
-    run_btn = st.button("RUN OPTIMIZATION", type="primary")
+    run_btn = st.button("RUN OPTIMIZER", type="primary")
 
 # -----------------------------------------------------------------------------
-# 3. EXECUTION LOGIC
+# 3. MAIN LOGIC
 # -----------------------------------------------------------------------------
 if uploaded_file and run_btn:
     df, col_map = load_data(uploaded_file)
     
     results = []
-    
-    # Progress Bar
     bar = st.progress(0)
     cups_list = df['CUPS'].unique()
     
     for idx, cups in enumerate(cups_list):
         df_c = df[df['CUPS'] == cups]
         
-        # 1. Prepare Data
-        max_dict = {}
+        # A. GET CURRENT STATUS
         curr_powers = {}
-        for i in range(1, 7):
-            max_dict[i] = df_c[col_map[f'max_p{i}']]
-            # Get current contract (mode or max to avoid 0s)
-            curr_powers[i] = df_c[col_map[f'con_p{i}']].max()
-            if curr_powers[i] == 0: curr_powers[i] = 1.0 
-            
-        # 2. Calculate Current Cost
-        current_cost = calculate_scenario_cost(curr_powers, max_dict, rate_map, base_rate_input, penalty_input)
+        max_series = {}
         
-        # 3. Optimize (Two Loop Strategy)
+        for i in range(1, 7):
+            # Max History
+            max_series[i] = df_c[col_map[f'max_p{i}']]
+            # Current Contract (Take max to avoid 0s)
+            val = df_c[col_map[f'con_p{i}']].max()
+            curr_powers[i] = val if val > 0 else 0
+        
+        # 1. Calculate Fixed Cost (Current)
+        curr_fixed = calculate_fixed_cost(curr_powers, rate_map, base_rate_input)
+        
+        # 2. Get REAL Penalty (Current)
+        # We trust the CSV 'Importe excesos' column for the "Before" state
+        if col_map['importe']:
+            curr_penalty = df_c[col_map['importe']].sum()
+        else:
+            # Fallback if column missing
+            curr_penalty = simulate_penalty_cost(curr_powers, max_series, penalty_input)
+            
+        total_curr = curr_fixed + curr_penalty
+        
+        # B. OPTIMIZATION LOOP
         best_powers = {}
         prev_p = 0
         
         for i in range(1, 7):
-            peak = max_dict[i].max()
-            if peak == 0: peak = prev_p 
+            peak = max_series[i].max()
+            if peak == 0: peak = prev_p
             
-            # Constraint: Cannot be lower than previous period
             min_limit = max(prev_p, 0)
             
-            # --- LOOP 1: COARSE (10% steps) ---
-            # Search from Min Limit to 200% of Peak
-            start_c = min_limit
-            end_c = max(min_limit, peak * 2.0)
-            step_c = max(1.0, peak * 0.1)
-            candidates_1 = np.arange(start_c, end_c + step_c, step_c)
+            # --- Loop 1: Coarse (10% steps) ---
+            start = min_limit
+            end = max(min_limit, peak * 2.5) # Wider range
+            step = max(1.0, peak * 0.1)
             
-            best_c = start_c
+            candidates_1 = np.arange(start, end + step, step)
+            
+            best_c = start
             min_cost_c = float('inf')
             
-            def period_cost_fn(p, period_idx):
-                f_cost = p * rate_map[f'P{period_idx}']
+            def check_cost(p, idx):
+                # Local period cost function
+                f = p * rate_map[f'P{idx}']
                 limit = 1.05 * p
-                excess = max_dict[period_idx][max_dict[period_idx] > limit] - limit
-                p_cost = excess.sum() * penalty_input
-                return f_cost + p_cost
-
-            for p in candidates_1:
-                c = period_cost_fn(p, i)
-                if c < min_cost_c:
-                    min_cost_c = c
-                    best_c = p
+                exc = max_series[idx][max_series[idx] > limit] - limit
+                pen = exc.sum() * penalty_input
+                return f + pen
             
-            # --- LOOP 2: FINE (1% steps around best coarse) ---
-            range_fine = peak * 0.15
+            for p in candidates_1:
+                cost = check_cost(p, i)
+                if cost < min_cost_c:
+                    min_cost_c = cost
+                    best_c = p
+                    
+            # --- Loop 2: Fine (1% steps) ---
+            range_fine = peak * 0.2
             start_f = max(min_limit, best_c - range_fine)
             end_f = best_c + range_fine
             step_f = max(0.1, peak * 0.01)
             
             candidates_2 = np.arange(start_f, end_f, step_f)
-            
             best_f = best_c
             min_cost_f = min_cost_c
             
             for p in candidates_2:
-                c = period_cost_fn(p, i)
-                if c < min_cost_f:
-                    min_cost_f = c
+                cost = check_cost(p, i)
+                if cost < min_cost_f:
+                    min_cost_f = cost
                     best_f = p
             
             best_powers[i] = round(best_f, 2)
-            prev_p = best_powers[i] # Set constraint for next period
+            prev_p = best_powers[i]
             
-        # 4. Final Calc
-        opt_cost = calculate_scenario_cost(best_powers, max_dict, rate_map, base_rate_input, penalty_input)
+        # C. FINAL RESULTS
+        opt_fixed = calculate_fixed_cost(best_powers, rate_map, base_rate_input)
+        opt_penalty = simulate_penalty_cost(best_powers, max_series, penalty_input)
+        total_opt = opt_fixed + opt_penalty
         
-        # 5. Safety Option (+5%)
-        safe_powers = {k: round(v * 1.05, 2) for k,v in best_powers.items()}
-        safe_cost = calculate_scenario_cost(safe_powers, max_dict, rate_map, base_rate_input, penalty_input)
+        # Safety Option (2nd best check)
+        # Just +5% buffer
+        safe_powers = {k: round(v*1.05, 2) for k,v in best_powers.items()}
+        safe_fixed = calculate_fixed_cost(safe_powers, rate_map, base_rate_input)
+        safe_penalty = simulate_penalty_cost(safe_powers, max_series, penalty_input)
+        total_safe = safe_fixed + safe_penalty
         
         results.append({
             'CUPS': cups,
-            'Current_Cost': current_cost,
-            'Optimized_Cost': opt_cost,
-            'Safety_Option_Cost': safe_cost,
-            'Savings': current_cost - opt_cost,
-            'Best_Powers': best_powers,
-            'Safe_Powers': safe_powers
+            'Current_Cost': total_curr,
+            'Optimized_Cost': total_opt,
+            'Safety_Cost': total_safe,
+            'Savings': total_curr - total_opt,
+            'Real_Penalty_Paid': curr_penalty,
+            'Simulated_New_Penalty': opt_penalty,
+            'Current_Powers': curr_powers,
+            'Optimized_Powers': best_powers
         })
-        
         bar.progress((idx+1)/len(cups_list))
         
-    # --- OUTPUTS ---
-    res_df = pd.DataFrame(results)
+    df_res = pd.DataFrame(results).sort_values('Savings', ascending=False)
     
-    # Fill NaNs to prevent crashes
-    res_df = res_df.fillna(0)
-    res_df = res_df.sort_values('Savings', ascending=False)
-    
+    # -------------------------------------------------------------------------
+    # 4. OUTPUTS
+    # -------------------------------------------------------------------------
     st.divider()
-    col1, col2 = st.columns(2)
-    col1.metric("Total Annual Savings", f"€ {res_df['Savings'].sum():,.2f}")
-    col2.metric("Centers Analyzed", len(res_df))
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Total Savings", f"€ {df_res['Savings'].sum():,.2f}")
+    col2.metric("Avg Savings / Center", f"€ {df_res['Savings'].mean():,.2f}")
+    col3.metric("Centers Analyzed", len(df_res))
     
-    st.subheader("🏆 Savings Leaderboard")
-    
-    # Prepare display dataframe (subset)
-    display_df = res_df[['CUPS', 'Current_Cost', 'Optimized_Cost', 'Savings', 'Safety_Option_Cost']].copy()
-    
-    # Streamlit Dataframe with Formatting
+    st.subheader("🏆 Results (Real Current Cost vs Optimized)")
     st.dataframe(
-        display_df.style.format({
-            'Current_Cost': '€ {:,.2f}', 
-            'Optimized_Cost': '€ {:,.2f}', 
-            'Savings': '€ {:,.2f}', 
-            'Safety_Option_Cost': '€ {:,.2f}'
-        }),
+        df_res[['CUPS', 'Current_Cost', 'Optimized_Cost', 'Savings', 'Real_Penalty_Paid', 'Simulated_New_Penalty']]
+        .style.format("€ {:,.2f}"),
         use_container_width=True
     )
     
-    st.subheader("🔍 Individual Center Analysis")
-    sel_cups = st.selectbox("Select Center", res_df['CUPS'])
+    st.divider()
+    st.subheader("🔍 Analysis Tool")
+    sel_cups = st.selectbox("Select Center", df_res['CUPS'])
     
     if sel_cups:
-        row = res_df[res_df['CUPS'] == sel_cups].iloc[0]
+        row = df_res[df_res['CUPS'] == sel_cups].iloc[0]
         
-        # Compare Powers
-        p_data = []
+        # Chart
+        plot_data = []
         for i in range(1, 7):
-            p_data.append({'Period': f'P{i}', 'Type': 'Best', 'kW': row['Best_Powers'][i]})
-            p_data.append({'Period': f'P{i}', 'Type': 'Safe (+5%)', 'kW': row['Safe_Powers'][i]})
+            # Current
+            plot_data.append({'Period': f'P{i}', 'Type': 'Current Contract', 'kW': row['Current_Powers'][i]})
+            # Optimized
+            plot_data.append({'Period': f'P{i}', 'Type': 'Optimized Contract', 'kW': row['Optimized_Powers'][i]})
+            # Max Usage
+            c_raw = df[df['CUPS'] == sel_cups]
+            mx = c_raw[col_map[f'max_p{i}']].max()
+            plot_data.append({'Period': f'P{i}', 'Type': 'Max Recorded', 'kW': mx})
             
-            # Add Max Recorded for Context
-            cup_raw = df[df['CUPS'] == sel_cups]
-            max_val = cup_raw[col_map[f'max_p{i}']].max()
-            p_data.append({'Period': f'P{i}', 'Type': 'Max Usage', 'kW': max_val})
-
-        chart_df = pd.DataFrame(p_data)
-        
-        fig = px.bar(chart_df, x='Period', y='kW', color='Type', barmode='group',
-                     color_discrete_map={'Best': '#00CC96', 'Safe (+5%)': '#636EFA', 'Max Usage': '#EF553B'})
+        fig = px.bar(plot_data, x='Period', y='kW', color='Type', barmode='group',
+                     color_discrete_map={'Current Contract': '#EF553B', 'Optimized Contract': '#00CC96', 'Max Recorded': '#636EFA'})
         st.plotly_chart(fig, use_container_width=True)
+        
+        st.info(f"""
+        **Cost Details for {sel_cups}:**
+        - You paid **€{row['Real_Penalty_Paid']:,.2f}** in penalties (from CSV).
+        - With optimization, estimated penalties drop to **€{row['Simulated_New_Penalty']:,.2f}**.
+        """)
 
 elif not uploaded_file:
-    st.info("👋 Upload a CSV to start the Black Box optimization.")
+    st.info("Waiting for file...")
