@@ -1,284 +1,151 @@
+## app.py
 import streamlit as st
-import pandas as pd
 import numpy as np
-import plotly.express as px
+import pandas as pd
+import plotly.graph_objects as go
 
-# -----------------------------------------------------------------------------
-# 1. SETUP & CONFIG
-# -----------------------------------------------------------------------------
-st.set_page_config(page_title="Power Opti-BlackBox (Stable)", layout="wide")
-st.title("🧮 Power Contract Optimization (Black Box)")
+# --- PAGE CONFIGURATION ---
+st.set_page_config(
+    page_title="Indore Solar Radiation Analyzer",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
-def clean_number(x):
-    """
-    Robust cleaner. Handles 1.234,56 OR 1234.56
-    """
-    if pd.isna(x) or str(x).strip() == "": return 0.0
-    if isinstance(x, (int, float)): return float(x)
-    
-    s = str(x).strip()
-    # If "1.234,56" (Spanis) -> remove dot, replace comma
-    if '.' in s and ',' in s:
-        s = s.replace('.', '').replace(',', '.')
-    # If "1,23" (Spanish simple) -> replace comma
-    elif ',' in s:
-        s = s.replace(',', '.')
-    # If "1.23" (English/Manual) -> keep as is
-    
-    try: return float(s)
-    except: return 0.0
+# --- CONSTANTS (Indore Context) ---
+LATITUDE = 22.71  # North [cite: 5, 24]
+I_SC = 1367       # Solar Constant
+TAU_ATM = 0.7     # Transmittance approx
+
+# --- SOLAR CALCULATIONS ---
+def get_declination(day_of_year):
+    """Approximate declination angle delta in degrees."""
+    return 23.45 * np.sin(np.deg2rad(360 * (284 + day_of_year) / 365))
 
 @st.cache_data
-def load_data(file):
-    df = pd.read_csv(file)
+def calculate_radiation_data(day_of_year, tilt, surface_azimuth):
+    """
+    Calculates hourly radiation components.
+    surface_azimuth: 0=South, -90=East, 90=West, 180=North [cite: 24, 75, 76]
+    """
+    declination = get_declination(day_of_year)
+    delta_rad = np.deg2rad(declination)
+    phi_rad = np.deg2rad(LATITUDE)
+    beta_rad = np.deg2rad(tilt)
+    gamma_rad = np.deg2rad(surface_azimuth)
     
-    # Map Columns
-    col_map = {}
-    cols = df.columns
-    for i in range(1, 7):
-        # Flexible search
-        max_c = [c for c in cols if f'P{i}' in c and ('Max' in c or 'max' in c)]
-        con_c = [c for c in cols if f'P{i}' in c and ('Potencia' in c or 'Con' in c)]
-        
-        if max_c: col_map[f'max_p{i}'] = max_c[0]
-        if con_c: col_map[f'con_p{i}'] = con_c[0]
-    
-    # Look for "Importe excesos" to get the REAL fines paid
-    imp_col = [c for c in cols if 'Importe' in c and 'excesos' in c]
-    if imp_col:
-        col_map['importe'] = imp_col[0]
-    else:
-        col_map['importe'] = None
-        
-    targets = list(col_map.values())
-    targets = [t for t in targets if t is not None]
-    
-    for c in targets:
-        df[c] = df[c].apply(clean_number)
-            
-    return df, col_map
-
-def calculate_fixed_cost(contracted_map, prices_map, base_rate):
-    """Calculates ONLY the Fixed Power Term Cost."""
-    cost = base_rate
-    for i in range(1, 7):
-        p_val = contracted_map.get(i, 0)
-        cost += p_val * prices_map.get(f'P{i}', 0)
-    return cost
-
-def simulate_penalty_cost(contracted_map, max_series_map, penalty_price):
-    """Simulates penalties for the Optimized scenario."""
-    total_penalty = 0
-    for i in range(1, 7):
-        limit = 1.05 * contracted_map[i]
-        series = max_series_map[i]
-        # Excess calculation
-        excess = series[series > limit] - limit
-        total_penalty += excess.sum() * penalty_price
-    return total_penalty
-
-# -----------------------------------------------------------------------------
-# 2. INPUTS (SIDEBAR)
-# -----------------------------------------------------------------------------
-with st.sidebar:
-    st.header("1. Upload Data")
-    uploaded_file = st.file_uploader("Upload CSV (Manual or Raw)", type=['csv'])
-    
-    st.header("2. Costs & Rates")
-    
-    # Input 1: Base Rate
-    base_rate_input = st.number_input("Base Rate (Fixed Fee) €/Year", value=0.0, step=10.0)
-    
-    # Input 2: Period Rates
-    st.subheader("Power Term Rates (€/kW/Year)")
-    default_rates = pd.DataFrame({
-        'Period': ['P1', 'P2', 'P3', 'P4', 'P5', 'P6'],
-        'Rate': [30.0, 25.0, 15.0, 12.0, 8.0, 4.0]
-    })
-    edited_rates = st.data_editor(default_rates, hide_index=True)
-    rate_map = dict(zip(edited_rates['Period'], edited_rates['Rate']))
-    
-    # Input 3: Penalty Factor
-    st.subheader("Penalty Factor")
-    penalty_input = st.number_input(
-        "Estimated Penalty Cost (€/Excess kW)", 
-        value=1.50, 
-        step=0.1,
-        help="Used to simulate future penalties."
-    )
-    
-    run_btn = st.button("RUN OPTIMIZER", type="primary")
-
-# -----------------------------------------------------------------------------
-# 3. MAIN LOGIC
-# -----------------------------------------------------------------------------
-if uploaded_file and run_btn:
-    df, col_map = load_data(uploaded_file)
-    
+    hours = np.linspace(5, 19, 100) # 5 AM to 7 PM
     results = []
-    bar = st.progress(0)
-    cups_list = df['CUPS'].unique()
     
-    for idx, cups in enumerate(cups_list):
-        df_c = df[df['CUPS'] == cups]
+    for h in hours:
+        # Hour angle (omega): 0 at noon
+        omega = (h - 12) * 15
+        omega_rad = np.deg2rad(omega)
         
-        # A. GET CURRENT STATUS
-        curr_powers = {}
-        max_series = {}
+        # 1. Zenith Angle (theta_z)
+        cos_theta_z = (np.sin(phi_rad) * np.sin(delta_rad) + 
+                       np.cos(phi_rad) * np.cos(delta_rad) * np.cos(omega_rad))
         
-        for i in range(1, 7):
-            # Max History
-            max_series[i] = df_c[col_map[f'max_p{i}']]
-            # Current Contract (Take max to avoid 0s)
-            val = df_c[col_map[f'con_p{i}']].max()
-            curr_powers[i] = val if val > 0 else 0
+        if cos_theta_z <= 0:
+            results.append({"Hour": h, "Total": 0, "Beam": 0, "Diffuse": 0})
+            continue
+            
+        # 2. Incidence Angle (theta)
+        cos_theta = (np.sin(delta_rad) * np.sin(phi_rad) * np.cos(beta_rad) - 
+                     np.sin(delta_rad) * np.cos(phi_rad) * np.sin(beta_rad) * np.cos(gamma_rad) + 
+                     np.cos(delta_rad) * np.cos(phi_rad) * np.cos(beta_rad) * np.cos(omega_rad) +
+                     np.cos(delta_rad) * np.sin(phi_rad) * np.sin(beta_rad) * np.cos(gamma_rad) * np.cos(omega_rad) +
+                     np.cos(delta_rad) * np.sin(beta_rad) * np.sin(gamma_rad) * np.sin(omega_rad))
+
+        # 3. Beam Radiation
+        m = 1 / (cos_theta_z + 0.05)
+        I_b_normal = I_SC * (TAU_ATM ** m)
+        I_b_surface = max(0, I_b_normal * cos_theta)
+            
+        # 4. Diffuse & Reflected (Simplified model)
+        I_d_surface = (I_SC * 0.15 * cos_theta_z) * ((1 + np.cos(beta_rad)) / 2)
+        I_r_surface = (I_SC * 0.15 * cos_theta_z) * 0.2 * ((1 - np.cos(beta_rad)) / 2)
         
-        # 1. Calculate Fixed Cost (Current)
-        curr_fixed = calculate_fixed_cost(curr_powers, rate_map, base_rate_input)
-        
-        # 2. Get REAL Penalty (Current)
-        if col_map['importe']:
-            curr_penalty = df_c[col_map['importe']].sum()
-        else:
-            curr_penalty = simulate_penalty_cost(curr_powers, max_series, penalty_input)
-            
-        total_curr = curr_fixed + curr_penalty
-        
-        # B. OPTIMIZATION LOOP
-        best_powers = {}
-        prev_p = 0
-        
-        for i in range(1, 7):
-            peak = max_series[i].max()
-            if peak == 0: peak = prev_p
-            
-            min_limit = max(prev_p, 0)
-            
-            # --- Loop 1: Coarse (10% steps) ---
-            start = min_limit
-            end = max(min_limit, peak * 2.5)
-            step = max(1.0, peak * 0.1)
-            
-            candidates_1 = np.arange(start, end + step, step)
-            
-            best_c = start
-            min_cost_c = float('inf')
-            
-            def check_cost(p, idx):
-                f = p * rate_map[f'P{idx}']
-                limit = 1.05 * p
-                exc = max_series[idx][max_series[idx] > limit] - limit
-                pen = exc.sum() * penalty_input
-                return f + pen
-            
-            for p in candidates_1:
-                cost = check_cost(p, i)
-                if cost < min_cost_c:
-                    min_cost_c = cost
-                    best_c = p
-                    
-            # --- Loop 2: Fine (1% steps) ---
-            range_fine = peak * 0.2
-            start_f = max(min_limit, best_c - range_fine)
-            end_f = best_c + range_fine
-            step_f = max(0.1, peak * 0.01)
-            
-            candidates_2 = np.arange(start_f, end_f, step_f)
-            best_f = best_c
-            min_cost_f = min_cost_c
-            
-            for p in candidates_2:
-                cost = check_cost(p, i)
-                if cost < min_cost_f:
-                    min_cost_f = cost
-                    best_f = p
-            
-            best_powers[i] = round(best_f, 2)
-            prev_p = best_powers[i]
-            
-        # C. FINAL RESULTS
-        opt_fixed = calculate_fixed_cost(best_powers, rate_map, base_rate_input)
-        opt_penalty = simulate_penalty_cost(best_powers, max_series, penalty_input)
-        total_opt = opt_fixed + opt_penalty
-        
-        # Safety Option (+5%)
-        safe_powers = {k: round(v*1.05, 2) for k,v in best_powers.items()}
-        safe_fixed = calculate_fixed_cost(safe_powers, rate_map, base_rate_input)
-        safe_penalty = simulate_penalty_cost(safe_powers, max_series, penalty_input)
-        total_safe = safe_fixed + safe_penalty
+        diffuse_total = max(0, I_d_surface + I_r_surface)
         
         results.append({
-            'CUPS': cups,
-            'Current_Cost': total_curr,
-            'Optimized_Cost': total_opt,
-            'Safety_Cost': total_safe,
-            'Savings': total_curr - total_opt,
-            'Real_Penalty_Paid': curr_penalty,
-            'Simulated_New_Penalty': opt_penalty,
-            'Current_Powers': curr_powers,
-            'Optimized_Powers': best_powers
+            "Hour": h, 
+            "Total": I_b_surface + diffuse_total, 
+            "Beam": I_b_surface, 
+            "Diffuse": diffuse_total
         })
-        bar.progress((idx+1)/len(cups_list))
-        
-    df_res = pd.DataFrame(results).sort_values('Savings', ascending=False)
-    # SAFETY: Fill NaNs to prevent formatting crashes
-    df_res = df_res.fillna(0.0)
-    
-    # -------------------------------------------------------------------------
-    # 4. OUTPUTS
-    # -------------------------------------------------------------------------
-    st.divider()
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Total Savings", f"€ {df_res['Savings'].sum():,.2f}")
-    col2.metric("Avg Savings / Center", f"€ {df_res['Savings'].mean():,.2f}")
-    col3.metric("Centers Analyzed", len(df_res))
-    
-    st.subheader("🏆 Results (Real Current Cost vs Optimized)")
-    
-    # SAFE DATAFRAME DISPLAY
-    # We apply formatting specifically to numeric columns only
-    format_dict = {
-        'Current_Cost': "€ {:,.2f}",
-        'Optimized_Cost': "€ {:,.2f}",
-        'Savings': "€ {:,.2f}",
-        'Real_Penalty_Paid': "€ {:,.2f}",
-        'Simulated_New_Penalty': "€ {:,.2f}"
-    }
-    
-    st.dataframe(
-        df_res[['CUPS', 'Current_Cost', 'Optimized_Cost', 'Savings', 'Real_Penalty_Paid', 'Simulated_New_Penalty']]
-        .style.format(format_dict),
-        use_container_width=True
-    )
-    
-    st.divider()
-    st.subheader("🔍 Analysis Tool")
-    sel_cups = st.selectbox("Select Center", df_res['CUPS'])
-    
-    if sel_cups:
-        row = df_res[df_res['CUPS'] == sel_cups].iloc[0]
-        
-        # Chart
-        plot_data = []
-        for i in range(1, 7):
-            # Current
-            plot_data.append({'Period': f'P{i}', 'Type': 'Current Contract', 'kW': row['Current_Powers'][i]})
-            # Optimized
-            plot_data.append({'Period': f'P{i}', 'Type': 'Optimized Contract', 'kW': row['Optimized_Powers'][i]})
-            # Max Usage
-            c_raw = df[df['CUPS'] == sel_cups]
-            mx = c_raw[col_map[f'max_p{i}']].max()
-            plot_data.append({'Period': f'P{i}', 'Type': 'Max Recorded', 'kW': mx})
-            
-        fig = px.bar(plot_data, x='Period', y='kW', color='Type', barmode='group',
-                     color_discrete_map={'Current Contract': '#EF553B', 'Optimized Contract': '#00CC96', 'Max Recorded': '#636EFA'})
-        st.plotly_chart(fig, use_container_width=True)
-        
-        st.info(f"""
-        **Cost Details for {sel_cups}:**
-        - You paid **€{row['Real_Penalty_Paid']:,.2f}** in penalties (from CSV).
-        - With optimization, estimated penalties drop to **€{row['Simulated_New_Penalty']:,.2f}**.
-        """)
 
-elif not uploaded_file:
-    st.info("Waiting for file...")
+    return pd.DataFrame(results)
+
+# --- USER INTERFACE ---
+st.title("☀️ Solar Radiation Simulation: Indore (22.7°N)")
+st.markdown("""
+This application analyzes how surface slope and orientation affect solar energy gains. 
+In tropical latitudes like Indore, optimal summer strategies require nearly horizontal surfaces. [cite: 8]
+""")
+
+with st.sidebar:
+    st.header("Simulation Parameters")
+    season = st.radio("Select Season", ["Summer Solstice", "Winter Solstice"])
+    day_val = 172 if season == "Summer Solstice" else 355
+    
+    st.divider()
+    st.subheader("Surface Configuration")
+    
+    # Preset Slopes
+    slope_type = st.selectbox("Slope Preset", ["Optimum", "Vertical", "Custom"])
+    if slope_type == "Optimum":
+        # Logic: |Lat - Declination| [cite: 25]
+        tilt = 0.75 if season == "Summer Solstice" else 46.15
+        st.info(f"Calculated Optimum: {tilt}°")
+    elif slope_type == "Vertical":
+        tilt = 90.0
+    else:
+        tilt = st.slider("Custom Tilt (degrees)", 0.0, 90.0, 22.7)
+
+    # Orientation
+    orient_name = st.selectbox("Orientation", ["South", "East", "West", "North", "Custom"])
+    orient_map = {"South": 0, "East": -90, "West": 90, "North": 180}
+    if orient_name == "Custom":
+        azimuth = st.slider("Azimuth (South=0, West=90)", -180, 180, 0)
+    else:
+        azimuth = orient_map[orient_name]
+
+# --- DATA PROCESSING & PLOTTING ---
+df = calculate_radiation_data(day_val, tilt, azimuth)
+
+col1, col2 = st.columns([3, 1])
+
+with col1:
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=df["Hour"], y=df["Total"], name="Total Radiation", fill='tozeroy', line=dict(color='firebrick', width=3)))
+    fig.add_trace(go.Scatter(x=df["Hour"], y=df["Beam"], name="Beam Component", line=dict(dash='dash')))
+    fig.add_trace(go.Scatter(x=df["Hour"], y=df["Diffuse"], name="Diffuse/Reflected", line=dict(dash='dot')))
+
+    fig.update_layout(
+        title=f"Radiation Profile: {season} at {tilt}° Tilt ({orient_name})",
+        xaxis_title="Solar Time (h)",
+        yaxis_title="Irradiance (W/m²)",
+        hovermode="x unified",
+        template="plotly_white",
+        yaxis=dict(range=[0, 1200])
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+with col2:
+    st.metric("Peak Irradiance", f"{df['Total'].max():.2f} W/m²")
+    st.metric("Total Daily Energy", f"{(df['Total'].sum() * (14/100)):.2f} Wh/m²")
+    
+    st.write("---")
+    st.write("**Quick Comments:**")
+    if tilt == 90 and season == "Summer Solstice" and orient_name == "South":
+        st.warning("Note the 'dip' at noon! In Indore, the summer sun passes North of the zenith, leaving South vertical walls in shade. ")
+    elif tilt < 5:
+        st.success("Flat surfaces are nearly optimal for Indore summers. [cite: 30]")
+
+st.divider()
+st.subheader("Assignment Reference Data")
+st.table(pd.DataFrame({
+    "Scenario": ["Summer Opt", "Winter Opt", "Vertical South (Summer)"],
+    "Slope": ["0.75°", "46.15°", "90°"],
+    "Insight": ["Essentially Horizontal [cite: 30]", "Maximize low sun gains [cite: 394]", "Midday dip due to sun orientation "]
+}))
