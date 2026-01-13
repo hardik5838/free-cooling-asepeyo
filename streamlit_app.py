@@ -5,147 +5,84 @@ import pandas as pd
 import plotly.graph_objects as go
 
 # --- PAGE CONFIGURATION ---
-st.set_page_config(
-    page_title="Indore Solar Radiation Analyzer",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+st.set_page_config(page_title="Indore Report Generator", layout="centered")
 
 # --- CONSTANTS (Indore Context) ---
-LATITUDE = 22.71  # North [cite: 5, 24]
-I_SC = 1367       # Solar Constant
-TAU_ATM = 0.7     # Transmittance approx
+LATITUDE = 22.7  # North [cite: 5]
+I_SC = 1367       
+TAU_ATM = 0.7     
 
-# --- SOLAR CALCULATIONS ---
+# --- SOLAR MATH ---
 def get_declination(day_of_year):
-    """Approximate declination angle delta in degrees."""
     return 23.45 * np.sin(np.deg2rad(360 * (284 + day_of_year) / 365))
 
-@st.cache_data
-def calculate_radiation_data(day_of_year, tilt, surface_azimuth):
-    """
-    Calculates hourly radiation components.
-    surface_azimuth: 0=South, -90=East, 90=West, 180=North [cite: 24, 75, 76]
-    """
+def calculate_radiation(day_of_year, tilt, azimuth):
     declination = get_declination(day_of_year)
-    delta_rad = np.deg2rad(declination)
-    phi_rad = np.deg2rad(LATITUDE)
-    beta_rad = np.deg2rad(tilt)
-    gamma_rad = np.deg2rad(surface_azimuth)
+    delta_rad, phi_rad = np.deg2rad(declination), np.deg2rad(LATITUDE)
+    beta_rad, gamma_rad = np.deg2rad(tilt), np.deg2rad(azimuth)
     
-    hours = np.linspace(5, 19, 100) # 5 AM to 7 PM
-    results = []
-    
+    hours = np.linspace(5, 19, 100)
+    data = []
     for h in hours:
-        # Hour angle (omega): 0 at noon
-        omega = (h - 12) * 15
-        omega_rad = np.deg2rad(omega)
-        
-        # 1. Zenith Angle (theta_z)
+        omega_rad = np.deg2rad((h - 12) * 15)
         cos_theta_z = (np.sin(phi_rad) * np.sin(delta_rad) + 
                        np.cos(phi_rad) * np.cos(delta_rad) * np.cos(omega_rad))
         
         if cos_theta_z <= 0:
-            results.append({"Hour": h, "Total": 0, "Beam": 0, "Diffuse": 0})
+            data.append({"Hour": h, "It": 0, "Itb": 0, "Itd": 0})
             continue
             
-        # 2. Incidence Angle (theta)
         cos_theta = (np.sin(delta_rad) * np.sin(phi_rad) * np.cos(beta_rad) - 
                      np.sin(delta_rad) * np.cos(phi_rad) * np.sin(beta_rad) * np.cos(gamma_rad) + 
                      np.cos(delta_rad) * np.cos(phi_rad) * np.cos(beta_rad) * np.cos(omega_rad) +
                      np.cos(delta_rad) * np.sin(phi_rad) * np.sin(beta_rad) * np.cos(gamma_rad) * np.cos(omega_rad) +
                      np.cos(delta_rad) * np.sin(beta_rad) * np.sin(gamma_rad) * np.sin(omega_rad))
 
-        # 3. Beam Radiation
         m = 1 / (cos_theta_z + 0.05)
         I_b_normal = I_SC * (TAU_ATM ** m)
-        I_b_surface = max(0, I_b_normal * cos_theta)
-            
-        # 4. Diffuse & Reflected (Simplified model)
-        I_d_surface = (I_SC * 0.15 * cos_theta_z) * ((1 + np.cos(beta_rad)) / 2)
-        I_r_surface = (I_SC * 0.15 * cos_theta_z) * 0.2 * ((1 - np.cos(beta_rad)) / 2)
-        
-        diffuse_total = max(0, I_d_surface + I_r_surface)
-        
-        results.append({
-            "Hour": h, 
-            "Total": I_b_surface + diffuse_total, 
-            "Beam": I_b_surface, 
-            "Diffuse": diffuse_total
-        })
+        Itb = max(0, I_b_normal * cos_theta)
+        Itd = (I_SC * 0.15 * cos_theta_z) * ((1 + np.cos(beta_rad)) / 2)
+        data.append({"Hour": h, "It": Itb + Itd, "Itb": Itb, "Itd": Itd})
+    return pd.DataFrame(data)
 
-    return pd.DataFrame(results)
+# --- REPORT CONTENT MAPPING ---
+# Mapping figures to their specific settings and descriptions from your assignment
+figures = {
+    "Figure 1": {"season": "Summer", "slope": 0.75, "orient": 0, "desc": "Summer radiation at optimum slope (Horizontal). Peaking high as sun passes near zenith. [cite: 53, 54]"},
+    "Figure 2": {"season": "Winter", "slope": 46.15, "orient": 0, "desc": "Winter radiation at optimum slope (46.15°). Strong capture of low southern sun. [cite: 65, 66]"},
+    "Figure 3": {"season": "Summer", "slope": 0.75, "orient": -90, "desc": "Summer solstice radiation facing East. [cite: 101]"},
+    "Figure 4": {"season": "Winter", "slope": 46.15, "orient": -90, "desc": "Winter solstice radiation facing East. [cite: 124]"},
+    "Figure 7": {"season": "Summer", "slope": 0.75, "orient": 180, "desc": "Summer solstice radiation facing North. [cite: 182]"},
+    "Figure 9": {"season": "Summer", "slope": 90, "orient": 0, "desc": "Summer South Vertical: Sun passes North of zenith, leading to midday self-shading. [cite: 242]"},
+    "Figure 10": {"season": "Winter", "slope": 90, "orient": 0, "desc": "Winter South Vertical: Good incidence angle for vertical walls in winter. [cite: 260]"}
+}
 
-# --- USER INTERFACE ---
-st.title("☀️ Solar Radiation Simulation: Indore (22.7°N)")
-st.markdown("""
-This application analyzes how surface slope and orientation affect solar energy gains. 
-In tropical latitudes like Indore, optimal summer strategies require nearly horizontal surfaces. [cite: 8]
-""")
+# --- UI ---
+st.title("📄 Report Generator: Solar Radiation")
+st.sidebar.header("Selection for Print")
+selected_fig = st.sidebar.selectbox("Select Figure for Report", list(figures.keys()))
 
-with st.sidebar:
-    st.header("Simulation Parameters")
-    season = st.radio("Select Season", ["Summer Solstice", "Winter Solstice"])
-    day_val = 172 if season == "Summer Solstice" else 355
-    
-    st.divider()
-    st.subheader("Surface Configuration")
-    
-    # Preset Slopes
-    slope_type = st.selectbox("Slope Preset", ["Optimum", "Vertical", "Custom"])
-    if slope_type == "Optimum":
-        # Logic: |Lat - Declination| [cite: 25]
-        tilt = 0.75 if season == "Summer Solstice" else 46.15
-        st.info(f"Calculated Optimum: {tilt}°")
-    elif slope_type == "Vertical":
-        tilt = 90.0
-    else:
-        tilt = st.slider("Custom Tilt (degrees)", 0.0, 90.0, 22.7)
+config = figures[selected_fig]
+day_val = 172 if config["season"] == "Summer" else 355
+df = calculate_radiation(day_val, config["slope"], config["orient"])
 
-    # Orientation
-    orient_name = st.selectbox("Orientation", ["South", "East", "West", "North", "Custom"])
-    orient_map = {"South": 0, "East": -90, "West": 90, "North": 180}
-    if orient_name == "Custom":
-        azimuth = st.slider("Azimuth (South=0, West=90)", -180, 180, 0)
-    else:
-        azimuth = orient_map[orient_name]
+# Chart Styling
+fig = go.Figure()
+fig.add_trace(go.Scatter(x=df["Hour"], y=df["It"], name="It (Total)", line=dict(color='black', width=2)))
+fig.add_trace(go.Scatter(x=df["Hour"], y=df["Itb"], name="Itb (Beam)", line=dict(dash='dash', color='blue')))
+fig.add_trace(go.Scatter(x=df["Hour"], y=df["Itd"], name="Itd (Diffuse)", line=dict(dash='dot', color='green')))
 
-# --- DATA PROCESSING & PLOTTING ---
-df = calculate_radiation_data(day_val, tilt, azimuth)
+fig.update_layout(
+    title=f"{selected_fig}: {config['season']} Solstice (Slope: {config['slope']}°, Orient: {config['orient']}°)",
+    xaxis_title="Solar Time (h)",
+    yaxis_title="Radiation (W/m²)",
+    template="plotly_white",
+    height=500,
+    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+)
 
-col1, col2 = st.columns([3, 1])
+st.plotly_chart(fig, use_container_width=True)
 
-with col1:
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=df["Hour"], y=df["Total"], name="Total Radiation", fill='tozeroy', line=dict(color='firebrick', width=3)))
-    fig.add_trace(go.Scatter(x=df["Hour"], y=df["Beam"], name="Beam Component", line=dict(dash='dash')))
-    fig.add_trace(go.Scatter(x=df["Hour"], y=df["Diffuse"], name="Diffuse/Reflected", line=dict(dash='dot')))
-
-    fig.update_layout(
-        title=f"Radiation Profile: {season} at {tilt}° Tilt ({orient_name})",
-        xaxis_title="Solar Time (h)",
-        yaxis_title="Irradiance (W/m²)",
-        hovermode="x unified",
-        template="plotly_white",
-        yaxis=dict(range=[0, 1200])
-    )
-    st.plotly_chart(fig, use_container_width=True)
-
-with col2:
-    st.metric("Peak Irradiance", f"{df['Total'].max():.2f} W/m²")
-    st.metric("Total Daily Energy", f"{(df['Total'].sum() * (14/100)):.2f} Wh/m²")
-    
-    st.write("---")
-    st.write("**Quick Comments:**")
-    if tilt == 90 and season == "Summer Solstice" and orient_name == "South":
-        st.warning("Note the 'dip' at noon! In Indore, the summer sun passes North of the zenith, leaving South vertical walls in shade. ")
-    elif tilt < 5:
-        st.success("Flat surfaces are nearly optimal for Indore summers. [cite: 30]")
-
-st.divider()
-st.subheader("Assignment Reference Data")
-st.table(pd.DataFrame({
-    "Scenario": ["Summer Opt", "Winter Opt", "Vertical South (Summer)"],
-    "Slope": ["0.75°", "46.15°", "90°"],
-    "Insight": ["Essentially Horizontal [cite: 30]", "Maximize low sun gains [cite: 394]", "Midday dip due to sun orientation "]
-}))
+# Formal Report Text Box
+st.markdown(f"**Description:** {config['desc']}")
+st.info("💡 **Report Tip:** Use the 'Download as PNG' button on the top right of the chart to save this image for your PDF.")
