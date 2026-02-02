@@ -7,3 +7,6 @@ pandas
 openmeteo-requests
 retry-requests
 requests_cache
+scipy
+scikit-learn
+statsmodels
