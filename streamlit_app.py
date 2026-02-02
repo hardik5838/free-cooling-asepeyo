@@ -11,16 +11,48 @@ from scipy.stats import weibull_min
 from scipy.optimize import differential_evolution
 from sklearn.metrics import mean_squared_error
 
+# Values i need 
+"
+I need to load the data 
+than i need to cut out invalid parts and arrange them based on months 
+i need the software to compare the weekends to normal days and take out holidays 
+i need software to identify flat energy consumptionj and replace it with average from the last/next year 
+I need a base consumption from holidays 
+i need R values for each hour  
+i need k and c values for each month 
+i need peak start and peak drop 
+i need avg consuption 
+for prints i need 
+bar charts for kwh/hour days laboral and Holidays 
+I need an R value chart for temp 
+
+moving on to the second part the white box distribution 
+uising Kwh i need the M2 value
+using M2 and the R valu i need the U value 
+using the u value i want hourly Hvac consumption for COP 3 
+using the delt t of setpoint 23 I want ventilation consumption based on M2 
+based on m2 I need power consumption of lights 
+base can be directly taken from monthly average weekend consumption 
+for occupancy value dampened weibuls curve can be used to to find the center and understand peak timings , than depending of M2 the chart would be made 
+                                                                                                        
+using the white box , black box would be asked to create models 
+training needs to be figured out                                                                                                         
+                                                                                              
+                                                                                                      
+                                                                                              
+
+
+
+
+"
+
 # ==========================================
 # 1. CORE PHYSICS MODELS (Oasis white box)
 # ==========================================
 
 def oasis_white_model(total_daily_kwh, u_value=0.5, temp_out=30, temp_set=22, 
                       w_shape=5.0, w_scale=14.0, ai_dampening=1.0):
-    """
-    total_daily_kwh: Average daily consumption (kWh) over the last 3 years.
-    Returns calculated loads and floor area based on a 2.2m2/kWh ratio.
-    """
+
     t = np.linspace(0, 24, 100)
     
     # 1. Weibull Occupancy (Dynamic Profile)
