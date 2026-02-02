@@ -178,14 +178,23 @@ def show_nilm_page(df_consumo, df_clima):
 # ==========================================
 # 4. MAIN APP ENTRY
 # ==========================================
+# ==========================================
+# 4. MAIN APP ENTRY (SINGLE PAGE VIEW)
+# ==========================================
 
-st.set_page_config(page_title="Asepeyo Energy Dashboard", layout="wide")
+st.set_page_config(page_title="Asepeyo Integrated Energy Suite", layout="wide")
 
+# Sidebar for Global Controls
 with st.sidebar:
-    st.title("⚡ Control Panel")
-    page = st.selectbox("Tool", ["Dashboard General", "Simulación NILM (Avanzado)", "Oasis Physics Model"])
+    st.title("⚡ Global Controls")
     source = st.radio("Data Source", ["GitHub Demo", "Upload CSV"])
+    
+    st.divider()
+    st.subheader("Physics Model Inputs")
+    kwh_in = st.number_input("Oasis White: Total Daily kWh", value=5000)
+    u_val = st.slider("U-Value (Insulation)", 0.1, 2.0, 0.5)
 
+# 1. Data Loading Logic
 if source == "GitHub Demo":
     base_url = "https://raw.githubusercontent.com/hardik5838/EnergyPatternAnalysis/main/data/"
     df_consumo = load_energy_data(base_url + quote("251003 ASEPEYO - Curva de consumo ES0031405968956002BN.xlsx - Lecturas.csv"))
@@ -196,24 +205,53 @@ else:
     df_consumo = load_energy_data(up_e) if up_e else pd.DataFrame()
     df_clima = load_weather_data(up_w) if up_w else pd.DataFrame()
 
-if page == "Dashboard General":
-    st.title("Energy Consumption Patterns")
+# --- MAIN DISPLAY AREA ---
+
+st.title("📊 Integrated Energy Analytics Dashboard")
+
+# Section 1: Raw Data & Patterns
+with st.container():
+    st.header("1. Energy Consumption Patterns")
     if not df_consumo.empty:
-        st.plotly_chart(px.line(df_consumo, x='Fecha', y='consumo_kwh', title="Raw Load Curve"), use_container_width=True)
+        col_raw, col_stats = st.columns([3, 1])
+        with col_raw:
+            st.plotly_chart(px.line(df_consumo, x='Fecha', y='consumo_kwh', 
+                                    title="Real-Time Load Curve", color_discrete_sequence=['#2ecc71']), 
+                            use_container_width=True)
+        with col_stats:
+            st.metric("Peak Load", f"{df_consumo['consumo_kwh'].max():.1f} kWh")
+            st.metric("Avg Load", f"{df_consumo['consumo_kwh'].mean():.1f} kWh")
     else:
-        st.info("Upload data to view dashboard.")
+        st.info("Waiting for energy data upload...")
 
-elif page == "Simulación NILM (Avanzado)":
-    show_nilm_page(df_consumo, df_clima)
+st.divider()
 
-elif page == "Oasis Physics Model":
-    st.title("Oasis White Physics-Based Model")
-    kwh_in = st.number_input("Total Daily kWh", value=5000)
-    t, light, vent, hvac, misc, area = oasis_white_model(kwh_in)
-    st.metric("Estimated Floor Area", f"{area:.2f} m²")
+# Section 2: NILM & Digital Twin (Optimization)
+with st.container():
+    st.header("2. Digital Twin Calibration (NILM)")
+    if not df_consumo.empty:
+        # We call the existing function logic but inside this container
+        show_nilm_page(df_consumo, df_clima)
+    else:
+        st.warning("Upload data to enable Digital Twin calibration.")
+
+st.divider()
+
+# Section 3: Physics-Based Oasis Model
+with st.container():
+    st.header("3. Oasis White Physics Model")
+    t, light, vent, hvac, misc, area = oasis_white_model(total_daily_kwh=kwh_in, u_value=u_val)
     
-    fig_phys = go.Figure()
-    fig_phys.add_trace(go.Scatter(x=t, y=light, name="Lighting"))
-    fig_phys.add_trace(go.Scatter(x=t, y=vent, name="Ventilation"))
-    fig_phys.add_trace(go.Scatter(x=t, y=hvac, name="HVAC"))
-    st.plotly_chart(fig_phys, use_container_width=True)
+    m1, m2 = st.columns([1, 3])
+    with m1:
+        st.write("### Building DNA")
+        st.metric("Calc. Floor Area", f"{area:.0f} m²")
+        st.write("This model simulates theoretical loads based on building physics rather than meter data.")
+        
+    with m2:
+        fig_phys = go.Figure()
+        fig_phys.add_trace(go.Scatter(x=t, y=light, name="Lighting (kW)", line=dict(color='gold')))
+        fig_phys.add_trace(go.Scatter(x=t, y=vent, name="Ventilation (kW)", line=dict(color='skyblue')))
+        fig_phys.add_trace(go.Scatter(x=t, y=hvac, name="HVAC (kW)", line=dict(color='salmon')))
+        fig_phys.update_layout(title="Theoretical Load Breakdown", xaxis_title="Hour of Day", yaxis_title="Power (kW)")
+        st.plotly_chart(fig_phys, use_container_width=True)
