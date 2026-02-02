@@ -197,6 +197,9 @@ def show_nilm_page(df_consumo, df_clima):
 st.set_page_config(page_title="Asepeyo Integrated Energy Suite", layout="wide")
 
 # Sidebar for Global Controls
+st.set_page_config(page_title="Asepeyo Integrated Energy Suite", layout="wide")
+
+# Sidebar for Global Controls
 with st.sidebar:
     st.title("⚡ Global Controls")
     source = st.radio("Data Source", ["GitHub Demo", "Upload CSV"])
