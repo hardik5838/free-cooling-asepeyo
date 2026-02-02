@@ -12,38 +12,50 @@ from scipy.optimize import differential_evolution
 from sklearn.metrics import mean_squared_error
 
 # ==========================================
-# 1. CORE PHYSICS MODELS (Oasis White)
+# 1. CORE PHYSICS MODELS (Oasis white box)
 # ==========================================
 
 def oasis_white_model(total_daily_kwh, u_value=0.5, temp_out=30, temp_set=22, 
                       w_shape=5.0, w_scale=14.0, ai_dampening=1.0):
+    """
+    total_daily_kwh: Average daily consumption (kWh) over the last 3 years.
+    Returns calculated loads and floor area based on a 2.2m2/kWh ratio.
+    """
     t = np.linspace(0, 24, 100)
     
-    # 1. Weibull Occupancy
+    # 1. Weibull Occupancy (Dynamic Profile)
+    # This simulates how people move through the "Oasis"
     occupancy_raw = weibull_min.pdf(t, w_shape, loc=0, scale=w_scale)
     occupancy = (occupancy_raw / np.max(occupancy_raw)) * ai_dampening
     
-    # 2. Floor Area Derivation
-    avg_intensity = 0.05 
-    floor_area = total_daily_kwh / (avg_intensity * 24)
+    # 2. Floor Area Derivation (Updated Logic)
+    # Requirement: 2.2m2 per 1kWh daily
+    m2_per_kwh_ratio = 2.2
+    floor_area = total_daily_kwh * m2_per_kwh_ratio
     
-    # 3. Lighting
-    avg_illumination_per_m2 = 0.010 
+    # 3. Lighting Physics
+    # Lighting = Area * Intensity * Occupancy + Residual Base
+    avg_illumination_per_m2 = 0.010 # 10W per m2
     control_factor = 0.8
     lighting_active = floor_area * avg_illumination_per_m2 * control_factor * occupancy
-    lighting = (lighting_active * 0.85) + (lighting_active.max() * 0.15)
+    lighting = (lighting_active * 0.85) + (lighting_active.max() * 0.15) 
 
-    # 4. Ventilation
+    # 4. Ventilation (L/s Scale + Thermal Load)
     del_t = abs(temp_out - temp_set)
     cop_vent = 3.5 
     vent_per_person = (occupancy * 9 + 1)
-    vent_base = vent_per_person * (floor_area / 15)
+    vent_base = vent_per_person * (floor_area / 15) # Assuming 15m2 per person density
     ventilation = (vent_base * 0.95) + (vent_base.max() * 0.05) + (del_t / cop_vent)
 
-    # 5. HVAC & Others
+    # 5. HVAC (Building Envelope Physics)
+    # Heat Transfer: Q = (U * A * dT) / 1000 to get kW
     hvac_load_max = (u_value * floor_area * del_t) / 1000 
     hvac = (occupancy * 0.95 * hvac_load_max) + (0.05 * hvac_load_max)
-    others = (occupancy * 0.95 * (total_daily_kwh/24 * 0.2)) + (0.05 * (total_daily_kwh/24 * 0.2))
+
+    # 6. Others (Plug Loads / Equipment)
+    # Assumes "Others" is roughly 20% of the daily average spread across the day
+    avg_other_kw = (total_daily_kwh / 24) * 0.2
+    others = (occupancy * 0.95 * avg_other_kw) + (0.05 * avg_other_kw)
 
     return t, lighting, ventilation, hvac, others, floor_area
 
