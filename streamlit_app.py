@@ -11,40 +11,113 @@ from scipy.stats import weibull_min
 from scipy.optimize import differential_evolution
 from sklearn.metrics import mean_squared_error
 
-# Values i need 
-"
-I need to load the data 
-than i need to cut out invalid parts and arrange them based on months 
-i need the software to compare the weekends to normal days and take out holidays 
-i need software to identify flat energy consumptionj and replace it with average from the last/next year 
-I need a base consumption from holidays 
-i need R values for each hour  
-i need k and c values for each month 
-i need peak start and peak drop 
-i need avg consuption 
-for prints i need 
-bar charts for kwh/hour days laboral and Holidays 
-I need an R value chart for temp 
 
-moving on to the second part the white box distribution 
-uising Kwh i need the M2 value
-using M2 and the R valu i need the U value 
-using the u value i want hourly Hvac consumption for COP 3 
-using the delt t of setpoint 23 I want ventilation consumption based on M2 
-based on m2 I need power consumption of lights 
-base can be directly taken from monthly average weekend consumption 
-for occupancy value dampened weibuls curve can be used to to find the center and understand peak timings , than depending of M2 the chart would be made 
-                                                                                                        
-using the white box , black box would be asked to create models 
-training needs to be figured out                                                                                                         
-                                                                                              
-                                                                                                      
-                                                                                              
+"I need to load the data 
+"than i need to cut out invalid parts and arrange them based on months 
+"i need the software to compare the weekends to normal days and take out holidays 
+"i need software to identify flat energy consumptionj and replace it with average from the last/next year 
+"I need a base consumption from holidays 
+"i need R values for each hour  
+"i need k and c values for each month 
+"i need peak start and peak drop 
+"i need avg consuption 
+"for prints i need 
+"bar charts for kwh/hour days laboral and Holidays 
+"I need an R value chart for temp 
+"moving on to the second part the white box distribution 
+"uising Kwh i need the M2 value
+"using M2 and the R valu i need the U value 
+"using the u value i want hourly Hvac consumption for COP 3 
+"using the delt t of setpoint 23 I want ventilation consumption based on M2 
+"based on m2 I need power consumption of lights 
+"base can be directly taken from monthly average weekend consumption 
+"for occupancy value dampened weibuls curve can be used to to find the center and understand peak timings , than depending of M2 the chart would be made                                                                                            
+"using the white box , black box would be asked to create models 
+"training needs to be figured out                                                                                                        
 
 
+# ==========================================
+# 1. DATA LOADING & UI
+# ==========================================
+
+@st.cache_data
+def load_energy_data(file_input):
+    try:
+        df = pd.read_csv(file_input, sep=',', skipinitialspace=True)
+        df.columns = df.columns.str.strip()
+        col_Fecha, col_energia = 'Fecha', 'Energía activa (kWh)'
+        
+        if col_Fecha not in df.columns or col_energia not in df.columns:
+            return pd.DataFrame()
+        
+        df = df.rename(columns={col_Fecha: 'Fecha', col_energia: 'consumo_kwh'})
+        if df['consumo_kwh'].dtype == 'object':
+            df['consumo_kwh'] = df['consumo_kwh'].astype(str).str.replace(',', '.')
+        
+        df['consumo_kwh'] = pd.to_numeric(df['consumo_kwh'], errors='coerce')
+        df['Fecha'] = pd.to_datetime(df['Fecha'], dayfirst=True, errors='coerce')
+        return df.dropna(subset=['Fecha', 'consumo_kwh']).sort_values('Fecha')
+    except:
+        return pd.DataFrame()
+
+@st.cache_data
+def load_weather_data(file_path):
+    try:
+        if isinstance(file_path, str) and file_path.startswith('http'):
+            content = requests.get(file_path).text
+        else:
+            content = file_path.getvalue().decode("utf-8")
+        
+        lines = content.splitlines()
+        start_row = next(i for i, line in enumerate(lines) if "YEAR,MO,DY,HR" in line)
+        df = pd.read_csv(io.StringIO('\n'.join(lines[start_row:])))
+        df['Fecha'] = pd.to_datetime(df[['YEAR', 'MO', 'DY', 'HR']].astype(str).agg('-'.join, axis=1), format='%Y-%m-%d-%H')
+        df.rename(columns={'T2M': 'temperatura_c', 'RH2M': 'humedad_relativa'}, inplace=True)
+        return df[['Fecha', 'temperatura_c', 'humedad_relativa']]
+    except:
+        return pd.DataFrame()
+
+def show_nilm_page(df_consumo, df_clima):
+    st.subheader("Digital Shadow")
+    if df_consumo.empty:
+        st.warning("Please upload energy data first.")
+        return
+
+    # Prep average day
+    df_merged = pd.merge(df_consumo, df_clima, on='Fecha', how='inner') if not df_clima.empty else df_consumo.assign(temperatura_c=22.0)
+    df_avg = df_merged.groupby(df_merged['Fecha'].dt.hour).agg({'consumo_kwh': 'mean', 'temperatura_c': 'mean'}).reset_index().rename(columns={'Fecha': 'hora'})
+
+    if 'opt_params' not in st.session_state:
+        st.session_state['opt_params'] = [10.0, 20.0, 8.0, 18.0, 1.0, 15.0, 8.0, 19.0]
+
+    with st.sidebar:
+        if st.button("⚡ Auto-Calibrate Model", type="primary"):
+            with st.spinner("AI is solving building DNA..."):
+                st.session_state['opt_params'] = run_auto_calibration(df_avg)
+
+        p = st.session_state['opt_params']
+        base_kw = st.slider("Base Load (kW)", 0.0, 200.0, float(p[0]))
+        h_kw = st.slider("HVAC Max (kW)", 0.0, 500.0, float(p[1]))
+        h_s = st.slider("HVAC Start", 0, 24, int(p[2]))
+        h_e = st.slider("HVAC End", 0, 24, int(p[3]))
+        h_ua = st.slider("Thermal Sensitivity (UA)", 0.1, 10.0, float(p[4]))
+        o_kw = st.slider("Ops Max (kW)", 0.0, 500.0, float(p[5]))
+        o_s = st.slider("Ops Start", 0, 24, int(p[6]))
+        o_e = st.slider("Ops End", 0, 24, int(p[7]))
+
+    config = {'base_kw': base_kw, 'hvac_kw': h_kw, 'hvac_s': h_s, 'hvac_e': h_e, 'hvac_ua': h_ua, 'hvac_setpoint': 21.0, 'hvac_res': 0.1, 'ops_kw': o_kw, 'ops_s': o_s, 'ops_e': o_e}
+    df_sim = run_simulation(df_avg, config)
+    
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=df_sim['hora'], y=df_sim['consumo_kwh'], name='REAL Meter', line=dict(color='black', width=3)))
+    fig.add_trace(go.Scatter(x=df_sim['hora'], y=df_sim['sim_total'], name='Digital Twin', line=dict(color='green', dash='dot')))
+    fig.add_trace(go.Scatter(x=df_sim['hora'], y=df_sim['sim_base'], name='Base', stackgroup='one', fillcolor='rgba(100,100,100,0.2)'))
+    fig.add_trace(go.Scatter(x=df_sim['hora'], y=df_sim['sim_therm'], name='HVAC', stackgroup='one', fillcolor='rgba(255,0,0,0.2)'))
+    fig.add_trace(go.Scatter(x=df_sim['hora'], y=df_sim['sim_ops'], name='Ops', stackgroup='one', fillcolor='rgba(255,200,0,0.2)'))
+    st.plotly_chart(fig, use_container_width=True)
 
 
-"
+
 
 # ==========================================
 # 1. CORE PHYSICS MODELS (Oasis white box)
@@ -138,86 +211,6 @@ def run_auto_calibration(df_avg):
     result = differential_evolution(objective_function, bounds, args=(df_avg,), maxiter=15, popsize=10, seed=42)
     return result.x
 
-# ==========================================
-# 3. DATA LOADING & UI
-# ==========================================
-
-@st.cache_data
-def load_energy_data(file_input):
-    try:
-        df = pd.read_csv(file_input, sep=',', skipinitialspace=True)
-        df.columns = df.columns.str.strip()
-        col_Fecha, col_energia = 'Fecha', 'Energía activa (kWh)'
-        
-        if col_Fecha not in df.columns or col_energia not in df.columns:
-            return pd.DataFrame()
-        
-        df = df.rename(columns={col_Fecha: 'Fecha', col_energia: 'consumo_kwh'})
-        if df['consumo_kwh'].dtype == 'object':
-            df['consumo_kwh'] = df['consumo_kwh'].astype(str).str.replace(',', '.')
-        
-        df['consumo_kwh'] = pd.to_numeric(df['consumo_kwh'], errors='coerce')
-        df['Fecha'] = pd.to_datetime(df['Fecha'], dayfirst=True, errors='coerce')
-        return df.dropna(subset=['Fecha', 'consumo_kwh']).sort_values('Fecha')
-    except:
-        return pd.DataFrame()
-
-@st.cache_data
-def load_weather_data(file_path):
-    try:
-        if isinstance(file_path, str) and file_path.startswith('http'):
-            content = requests.get(file_path).text
-        else:
-            content = file_path.getvalue().decode("utf-8")
-        
-        lines = content.splitlines()
-        start_row = next(i for i, line in enumerate(lines) if "YEAR,MO,DY,HR" in line)
-        df = pd.read_csv(io.StringIO('\n'.join(lines[start_row:])))
-        df['Fecha'] = pd.to_datetime(df[['YEAR', 'MO', 'DY', 'HR']].astype(str).agg('-'.join, axis=1), format='%Y-%m-%d-%H')
-        df.rename(columns={'T2M': 'temperatura_c', 'RH2M': 'humedad_relativa'}, inplace=True)
-        return df[['Fecha', 'temperatura_c', 'humedad_relativa']]
-    except:
-        return pd.DataFrame()
-
-def show_nilm_page(df_consumo, df_clima):
-    st.subheader("🤖 Digital Twin & Auto-Calibration")
-    
-    if df_consumo.empty:
-        st.warning("Please upload energy data first.")
-        return
-
-    # Prep average day
-    df_merged = pd.merge(df_consumo, df_clima, on='Fecha', how='inner') if not df_clima.empty else df_consumo.assign(temperatura_c=22.0)
-    df_avg = df_merged.groupby(df_merged['Fecha'].dt.hour).agg({'consumo_kwh': 'mean', 'temperatura_c': 'mean'}).reset_index().rename(columns={'Fecha': 'hora'})
-
-    if 'opt_params' not in st.session_state:
-        st.session_state['opt_params'] = [10.0, 20.0, 8.0, 18.0, 1.0, 15.0, 8.0, 19.0]
-
-    with st.sidebar:
-        if st.button("⚡ Auto-Calibrate Model", type="primary"):
-            with st.spinner("AI is solving building DNA..."):
-                st.session_state['opt_params'] = run_auto_calibration(df_avg)
-
-        p = st.session_state['opt_params']
-        base_kw = st.slider("Base Load (kW)", 0.0, 200.0, float(p[0]))
-        h_kw = st.slider("HVAC Max (kW)", 0.0, 500.0, float(p[1]))
-        h_s = st.slider("HVAC Start", 0, 24, int(p[2]))
-        h_e = st.slider("HVAC End", 0, 24, int(p[3]))
-        h_ua = st.slider("Thermal Sensitivity (UA)", 0.1, 10.0, float(p[4]))
-        o_kw = st.slider("Ops Max (kW)", 0.0, 500.0, float(p[5]))
-        o_s = st.slider("Ops Start", 0, 24, int(p[6]))
-        o_e = st.slider("Ops End", 0, 24, int(p[7]))
-
-    config = {'base_kw': base_kw, 'hvac_kw': h_kw, 'hvac_s': h_s, 'hvac_e': h_e, 'hvac_ua': h_ua, 'hvac_setpoint': 21.0, 'hvac_res': 0.1, 'ops_kw': o_kw, 'ops_s': o_s, 'ops_e': o_e}
-    df_sim = run_simulation(df_avg, config)
-    
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=df_sim['hora'], y=df_sim['consumo_kwh'], name='REAL Meter', line=dict(color='black', width=3)))
-    fig.add_trace(go.Scatter(x=df_sim['hora'], y=df_sim['sim_total'], name='Digital Twin', line=dict(color='green', dash='dot')))
-    fig.add_trace(go.Scatter(x=df_sim['hora'], y=df_sim['sim_base'], name='Base', stackgroup='one', fillcolor='rgba(100,100,100,0.2)'))
-    fig.add_trace(go.Scatter(x=df_sim['hora'], y=df_sim['sim_therm'], name='HVAC', stackgroup='one', fillcolor='rgba(255,0,0,0.2)'))
-    fig.add_trace(go.Scatter(x=df_sim['hora'], y=df_sim['sim_ops'], name='Ops', stackgroup='one', fillcolor='rgba(255,200,0,0.2)'))
-    st.plotly_chart(fig, use_container_width=True)
 
 # ==========================================
 # 4. MAIN APP ENTRY
