@@ -7,7 +7,7 @@ st.title("⚡ Energy & Weather Dashboard")
 st.write("Loading modular data from GitHub for analysis.")
 
 # The Raw URL from GitHub (use the 'Raw' button on GitHub to get this)
-GITHUB_URL = "https://raw.githubusercontent.com/your_user/your_repo/main/test_file_Via_36.csv"
+GITHUB_URL = "https://raw.githubusercontent.com/hardik5838/free-cooling-asepeyo/refs/heads/main/data/test%20file%20Via%2036%20.csv"
 
 # Using the modular function
 data = load_github_energy_data(GITHUB_URL)
