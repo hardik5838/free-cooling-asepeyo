@@ -13,37 +13,37 @@ GITHUB_URL = "https://raw.githubusercontent.com/hardik5838/free-cooling-asepeyo/
 # Using the modular function
 data = load_github_energy_data(GITHUB_URL)
 
-if not data.empty:
+if not raw_data.empty:
     st.sidebar.header("Filter Settings")
-    use_filter = st.sidebar.checkbox("Apply High-Fidelity Filter", value=True)
     
-    if use_filter:
-        processed_data = apply_high_fidelity_filter(data.copy())
-        st.info("💡 High-Fidelity Filter active: Flat periods have been redistributed using a standard load profile.")
+    # TRIGGER: The user chooses to enhance the fidelity
+    enhance_fidelity = st.sidebar.toggle("Enhance Data Fidelity", value=True)
+    
+    if enhance_fidelity:
+        # We overwrite the 'data' variable for the WHOLE app
+        with st.spinner("Reshaping global energy blocks..."):
+            data = apply_high_fidelity_filter(raw_data)
     else:
-        processed_data = data
+        data = raw_data
 
-    # Visualization
-    st.subheader("Energy Profile Comparison")
+    # --- VISUALIZATION SECTION ---
     
-    # Select a specific date to see the 'Shape' clearly
-    selected_date = st.date_input("Focus on a specific day:", processed_data['fecha'].min())
-    day_data = processed_data[processed_data['fecha'].dt.date == selected_date]
-    
-    st.line_chart(day_data.set_index('fecha')[['consumo_kwh']])
+    st.header("Global Consumption Overview")
+    # This chart now uses 'data', which is either raw or reshaped globally
+    st.line_chart(data.set_index('fecha')['consumo_kwh'], use_container_width=True)
 
-
-
-if not data.empty:
-    st.success("Data loaded successfully!")
+    # --- DETAILED DAY VIEW ---
+    st.divider()
+    st.subheader("Daily Detail Inspection")
+    selected_date = st.date_input("Pick a day to verify the shape", data['fecha'].min())
     
-    # Quick metrics
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Total Rows", len(data))
-    col2.metric("Avg Temp", f"{data['temperatura_c'].mean():.2f} °C")
-    col3.metric("Max Consumption", f"{data['consumo_kwh'].max():.2f} kWh")
+    # Filter the already-processed data for the specific day
+    day_view = data[data['fecha'].dt.date == selected_date]
     
-    # Quick Plot
-    st.line_chart(data.set_index('fecha')[['consumo_kwh']])
+    if not day_view.empty:
+        st.area_chart(day_view.set_index('fecha')['consumo_kwh'])
+    else:
+        st.warning("No data for this specific date.")
+
 else:
-    st.warning("Waiting for data... check the URL or file format.")
+    st.error("Could not load data. Check your GitHub URL.")
