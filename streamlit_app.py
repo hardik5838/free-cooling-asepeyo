@@ -42,9 +42,6 @@ if not data.empty:
     col2.metric("Avg Temp", f"{data['temperatura_c'].mean():.2f} °C")
     col3.metric("Max Consumption", f"{data['consumo_kwh'].max():.2f} kWh")
     
-    # Preview
-    st.dataframe(data.head(10), use_container_width=True)
-    
     # Quick Plot
     st.line_chart(data.set_index('fecha')[['consumo_kwh']])
 else:
