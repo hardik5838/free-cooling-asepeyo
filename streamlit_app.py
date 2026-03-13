@@ -1,5 +1,6 @@
 import streamlit as st
-from data_utils import load_github_energy_data, apply_high_fidelity_filter
+from data_utils import load_github_energy_data
+from data_utils import apply_high_fidelity_filter
 
 st.set_page_config(page_title="Energy Analysis", layout="wide")
 
