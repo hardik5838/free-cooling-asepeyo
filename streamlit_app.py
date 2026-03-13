@@ -13,7 +13,7 @@ GITHUB_URL = "https://raw.githubusercontent.com/hardik5838/free-cooling-asepeyo/
 # Using the modular function
 data = load_github_energy_data(GITHUB_URL)
 
-if not raw_data.empty:
+if not data.empty:
     st.sidebar.header("Filter Settings")
     
     # TRIGGER: The user chooses to enhance the fidelity
