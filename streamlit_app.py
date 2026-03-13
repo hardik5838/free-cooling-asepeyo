@@ -11,7 +11,7 @@ st.write("Loading modular data from GitHub for analysis.")
 GITHUB_URL = "https://raw.githubusercontent.com/hardik5838/free-cooling-asepeyo/refs/heads/main/data/test%20file%20Via%2036%20.csv"
 
 # Using the modular function
-data = load_github_energy_data(GITHUB_URL)
+raw_data = load_github_energy_data(GITHUB_URL)
 
 if not raw_data.empty:
     st.sidebar.header("Filter Settings")
