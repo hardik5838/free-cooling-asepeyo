@@ -19,7 +19,7 @@ def load_github_energy_data(url):
         st.error(f"Module Error: {e}")
         return pd.DataFrame()
 
-def apply_high_fidelity_filter(df, threshold_hours=8, tolerance=0.2):
+def apply_high_fidelity_filter(df, threshold_hours=8, tolerance=0.1):
     """
     Fuzzy filter that groups values within +/- 1kWh tolerance.
     """
