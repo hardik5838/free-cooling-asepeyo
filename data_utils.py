@@ -1,7 +1,7 @@
 import pandas as pd
 import numpy as np
-import requests  # <--- Add this
-import io        # <--- Add this
+import requests
+import io
 import streamlit as st
 from scipy.interpolate import interp1d
 
