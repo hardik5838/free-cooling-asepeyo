@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 from scipy.interpolate import interp1d
 
-def apply_high_fidelity_filter(df, threshold_hours=6, tolerance=0.1):
+def apply_high_fidelity_filter(df, threshold_hours=24, tolerance=0.1):
     if df.empty: return df
     df = df.copy()
     
