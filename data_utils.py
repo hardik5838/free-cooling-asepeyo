@@ -4,7 +4,6 @@ from scipy.interpolate import interp1d
 
 
 @st.cache_data
-
 def load_github_energy_data(url):
     try:
         response = requests.get(url)
