@@ -2,6 +2,27 @@ import numpy as np
 import pandas as pd
 from scipy.interpolate import interp1d
 
+
+@st.cache_data
+
+def load_github_energy_data(url):
+    try:
+        response = requests.get(url)
+        df = pd.read_csv(io.StringIO(response.text), sep=',', skipinitialspace=True)
+        df.columns = df.columns.str.strip()
+
+        # Mapping: the file has 'kWh' and 'Fecha'
+
+        df = df.rename(columns={'Fecha': 'fecha', 'kWh': 'consumo_kwh'})
+        df['fecha'] = pd.to_datetime(df['fecha'], dayfirst=True, errors='coerce')
+        df['consumo_kwh'] = pd.to_numeric(df['consumo_kwh'], errors='coerce')
+        return df.dropna(subset=['fecha', 'consumo_kwh']).sort_values('fecha')
+    except Exception as e:
+        st.error(f"Module Error: {e}")
+        return pd.DataFrame()
+
+
+
 def apply_high_fidelity_filter(df, threshold_hours=24, tolerance=0.1):
     if df.empty: return df
     df = df.copy()
