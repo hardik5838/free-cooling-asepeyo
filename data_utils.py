@@ -21,7 +21,7 @@ def load_github_energy_data(url):
         st.error(f"Module Error: {e}")
         return pd.DataFrame()
 
-def apply_cut_filter(df, tolerance=0.01, min_block_size=3):
+def apply_high_fidelity_filter(df, tolerance=0.01, min_block_size=3):
     """
     Identifies stagnant blocks and removes them (cuts them out).
     """
