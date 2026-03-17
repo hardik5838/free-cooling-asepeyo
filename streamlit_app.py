@@ -1,8 +1,8 @@
 import streamlit as st
 from data_utils import load_github_energy_data
-from data_utils import apply_high_fidelity_filter
+from energy_processor import apply_high_fidelity_filter
 
-st.set_page_config(page_title="Energy Analysis", layout="wide")
+st.set_page_config(page_title="Energy Optimizer", layout="wide")
 
 st.title(" Energy & Weather Dashboard")
 st.write("Loading modular data from GitHub for analysis.")
