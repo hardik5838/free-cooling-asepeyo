@@ -26,59 +26,47 @@ def apply_high_fidelity_filter(df, tolerance=1.0):
     
     df = df.copy().reset_index(drop=True)
     
-    # 1. FIXED WEIGHTS (Now 24 values to match 24 hours)
-    # Added 0.40 at the end to complete the day cycle
+    # 1. FIXED WEIGHTS (Now exactly 24 values to prevent IndexError)
     weights = np.array([
         0.41, 0.42, 0.42, 0.41, 0.42, 0.95, 1.30, 1.56, 1.68, 1.74, 
         1.73, 1.70, 1.71, 1.63, 1.37, 1.35, 1.32, 1.14, 0.99, 0.50, 
-        0.44, 0.42, 0.41, 0.40
+        0.44, 0.42, 0.41, 0.40  # Added 24th value
     ])
     avg_weight = np.mean(weights)
     df['date_only'] = df['fecha'].dt.date
 
-    # Function to reshape stagnant blocks using your profile
     def fix_stagnant(group):
+        # Only reshape if the data is "flat" (stagnant meter)
         if (group['consumo_kwh'].max() - group['consumo_kwh'].min()) < tolerance:
             block_avg = group['consumo_kwh'].mean()
-            # This applies the weights according to the hour of the day
+            # Safety: use % 24 to ensure we never exceed the array length
             group['consumo_kwh'] = [
-                block_avg * (weights[h % 24] / avg_weight) 
+                block_avg * (weights[int(h) % 24] / avg_weight) 
                 for h in group['fecha'].dt.hour.values
             ]
         return group
 
-    # Apply the logic to stagnant days
+    # Process daily blocks
     df = df.groupby('date_only', group_keys=False).apply(fix_stagnant)
 
-    # 2. PCHIP CURVING & UPSAMPLING
-    # To get the "Perfect Curve" look, we need more points than just hours.
-    # We will interpolate onto a 15-minute grid.
-    
-    # Create a numeric representation of time (seconds from start)
+    # 2. PCHIP CURVING & UPSAMPLING (For the organic look)
+    # We turn the 1-hour data into 15-minute data to make it look curved
     t_numeric = (df['fecha'] - df['fecha'].min()).dt.total_seconds().values
     y_values = df['consumo_kwh'].values
     
-    # Build Pchip model (Shape-preserving, prevents overshooting)
+    # Shape-preserving spline (No overshooting)
     pchip_model = PchipInterpolator(t_numeric, y_values)
     
-    # Create a new index with 4x higher resolution (every 15 mins)
-    new_t = np.linspace(t_numeric.min(), t_numeric.max(), len(df) * 4)
-    new_y = pchip_model(new_t)
+    # Create 4x more points (15 min intervals)
+    t_dense = np.linspace(t_numeric.min(), t_numeric.max(), len(df) * 4)
+    y_dense = pchip_model(t_dense)
     
-    # Create the high-resolution dataframe for the chart
-    new_dates = [df['fecha'].min() + pd.Timedelta(seconds=s) for s in new_t]
-    curved_df = pd.DataFrame({'fecha': new_dates, 'consumo_kwh': new_y})
+    # Rebuild high-res dataframe
+    new_dates = [df['fecha'].min() + pd.Timedelta(seconds=s) for s in t_dense]
+    curved_df = pd.DataFrame({'fecha': new_dates, 'consumo_kwh': y_dense})
     
     return curved_df
 
-# --- Streamlit Logic ---
-url = "YOUR_DATA_URL"
-raw_data = load_github_energy_data(url)
-
-if not raw_data.empty:
-    # Processed data now has 15-min granularity and smooth Pchip curves
-    curved_data = apply_high_fidelity_filter(raw_data)
-    
-    st.subheader("High-Fidelity Energy Curve")
-    # Setting the index to 'fecha' so Streamlit plots it correctly
-    st.line_chart(curved_data.set_index('fecha')['consumo_kwh'])
+# --- Streamlit Usage ---
+# data = apply_high_fidelity_filter(raw_data)
+# st.line_chart(data.set_index('fecha'))
