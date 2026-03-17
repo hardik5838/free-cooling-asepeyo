@@ -33,13 +33,18 @@ if not raw_data.empty:
         model_data = build_oasis_features(data)
     
     # --- VISUALIZATION ---
-    st.header("Global Consumption Overview")
-    st.line_chart(data.set_index('fecha')['consumo_kwh'], use_container_width=True)
+
+st.header("Global Consumption Overview")
+
+with st.expander("View Global Trend (Resampled)", expanded=True):
+    global_chart_data = data.set_index('fecha')['consumo_kwh'].resample('D').mean()
+    st.line_chart(global_chart_data, use_container_width=True)
+
 
     # --- FEATURE PREVIEW ---
     if run_features and not model_data.empty:
         st.divider()
-        st.subheader("🤖 The Feature Matrix (Oasis Inputs)")
+        st.subheader("The Feature Matrix (Oasis Inputs)")
         st.write("These columns (Lags, Hour, Weekend) are what the XGBoost will use to predict the future.")
         
         # Show a snippet of the table
