@@ -1,6 +1,7 @@
 import pandas as pd
 import numpy as np
 from scipy.interpolate import interp1d
+import streamlit as st
 
 @st.cache_data
 def load_github_energy_data(url):
