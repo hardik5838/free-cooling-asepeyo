@@ -55,5 +55,5 @@ with st.expander("View Global Trend (Resampled)", expanded=True):
         comparison_plot = model_data.tail(500).set_index('fecha')[['consumo_kwh', 'lag_7d']]
         st.line_chart(comparison_plot)
 
-else:
+    else:
     st.error("Could not load data. Check your GitHub URL.")
