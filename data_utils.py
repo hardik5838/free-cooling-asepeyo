@@ -24,49 +24,58 @@ def apply_high_fidelity_filter(df, tolerance=1.0):
     if df.empty:
         return df
     
-    df = df.copy().reset_index(drop=True)
-    
-    # 1. FIXED WEIGHTS (Now exactly 24 values to prevent IndexError)
-    weights = np.array([
-        0.41, 0.42, 0.42, 0.41, 0.42, 0.95, 1.30, 1.56, 1.68, 1.74, 
-        1.73, 1.70, 1.71, 1.63, 1.37, 1.35, 1.32, 1.14, 0.99, 0.50, 
-        0.44, 0.42, 0.41, 0.40  # Added 24th value
-    ])
-    avg_weight = np.mean(weights)
+    df = df.copy()
     df['date_only'] = df['fecha'].dt.date
+    
+    # 1. REMOVE STAGNANT BLOCKS
+    # Instead of fixing them, we completely drop days where the meter was flat.
+    # This identifies days where (Max - Min) is less than your tolerance.
+    def is_active(group):
+        spread = group['consumo_kwh'].max() - group['consumo_kwh'].min()
+        return spread >= tolerance
 
-    def fix_stagnant(group):
-        # Only reshape if the data is "flat" (stagnant meter)
-        if (group['consumo_kwh'].max() - group['consumo_kwh'].min()) < tolerance:
-            block_avg = group['consumo_kwh'].mean()
-            # Safety: use % 24 to ensure we never exceed the array length
-            group['consumo_kwh'] = [
-                block_avg * (weights[int(h) % 24] / avg_weight) 
-                for h in group['fecha'].dt.hour.values
-            ]
-        return group
+    # We filter the dataframe to only keep 'Active' days
+    df = df.groupby('date_only').filter(is_active)
+    
+    if df.empty:
+        return pd.DataFrame(columns=['fecha', 'consumo_kwh'])
 
-    # Process daily blocks
-    df = df.groupby('date_only', group_keys=False).apply(fix_stagnant)
-
-    # 2. PCHIP CURVING & UPSAMPLING (For the organic look)
-    # We turn the 1-hour data into 15-minute data to make it look curved
+    # 2. PCHIP CURVING & UPSAMPLING
+    # We use the remaining "good" hourly data to create the smooth curve.
+    # Because the stagnant blocks are gone, Pchip will interpolate 
+    # a smooth curve through the resulting gaps.
+    
     t_numeric = (df['fecha'] - df['fecha'].min()).dt.total_seconds().values
     y_values = df['consumo_kwh'].values
     
-    # Shape-preserving spline (No overshooting)
+    # Ensure data is sorted and unique for the interpolator
+    t_numeric, unique_indices = np.unique(t_numeric, return_index=True)
+    y_values = y_values[unique_indices]
+    
+    # Build Pchip model (Shape-preserving / No overshooting)
     pchip_model = PchipInterpolator(t_numeric, y_values)
     
-    # Create 4x more points (15 min intervals)
-    t_dense = np.linspace(t_numeric.min(), t_numeric.max(), len(df) * 4)
+    # Create 15-minute intervals (4 points per hour) for the organic look
+    # We generate a range from the very start to the very end
+    t_dense = np.arange(t_numeric.min(), t_numeric.max(), 900) # 900 seconds = 15 mins
     y_dense = pchip_model(t_dense)
     
-    # Rebuild high-res dataframe
+    # Rebuild high-resolution dataframe
     new_dates = [df['fecha'].min() + pd.Timedelta(seconds=s) for s in t_dense]
     curved_df = pd.DataFrame({'fecha': new_dates, 'consumo_kwh': y_dense})
     
     return curved_df
 
-# --- Streamlit Usage ---
-# data = apply_high_fidelity_filter(raw_data)
-# st.line_chart(data.set_index('fecha'))
+# --- Streamlit Execution ---
+url = "YOUR_DATA_URL"
+raw_data = load_github_energy_data(url)
+
+if not raw_data.empty:
+    # This version removes blocks and bridges them with smooth curves
+    processed_data = apply_high_fidelity_filter(raw_data)
+    
+    st.subheader("High-Fidelity Filtered Curve")
+    if not processed_data.empty:
+        st.line_chart(processed_data.set_index('fecha')['consumo_kwh'])
+    else:
+        st.warning("All data was below the tolerance threshold and was filtered out.")
