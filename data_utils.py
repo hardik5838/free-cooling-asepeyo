@@ -2,6 +2,24 @@ import pandas as pd
 import numpy as np
 from scipy.interpolate import interp1d
 
+@st.cache_data
+def load_github_energy_data(url):
+    try:
+        response = requests.get(url)
+        response.raise_for_status() 
+        df = pd.read_csv(io.StringIO(response.text), sep=',', skipinitialspace=True)
+        df.columns = df.columns.str.strip()
+
+        # Mapping: the file has 'kWh' and 'Fecha'
+        df = df.rename(columns={'Fecha': 'fecha', 'kWh': 'consumo_kwh'})
+        df['fecha'] = pd.to_datetime(df['fecha'], dayfirst=True, errors='coerce')
+        df['consumo_kwh'] = pd.to_numeric(df['consumo_kwh'], errors='coerce')
+        
+        return df.dropna(subset=['fecha', 'consumo_kwh']).sort_values('fecha')
+    except Exception as e:
+        st.error(f"Data Load Error: {e}")
+        return pd.DataFrame()
+
 def get_profile_weight(hour_decimal):
     """Returns a weight based on a typical 24h residential curve."""
     hours = np.arange(24)
