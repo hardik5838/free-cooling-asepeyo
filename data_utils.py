@@ -1,13 +1,12 @@
 import pandas as pd
-import numpy as np
-import requests  # <--- CRITICAL: This fixes the "name 'requests' is not defined" error
+import requests
 import io
 import streamlit as st
-from scipy.interpolate import interp1d
 
 @st.cache_data
 def load_github_energy_data(url):
     try:
+        # Fixed: import requests is inside the module now
         response = requests.get(url)
         response.raise_for_status()
         df = pd.read_csv(io.StringIO(response.text), sep=',', skipinitialspace=True)
@@ -22,32 +21,26 @@ def load_github_energy_data(url):
         st.error(f"Module Error: {e}")
         return pd.DataFrame()
 
-def apply_high_fidelity_filter(df, tolerance=0.02):
-    """Reshapes flat blocks without butchering the energy totals."""
+def apply_cut_filter(df, tolerance=0.01, min_block_size=3):
+    """
+    Identifies stagnant blocks and removes them (cuts them out).
+    """
     if df.empty: return df
     df = df.copy()
     
-    # Identify blocks where data is 'stuck' (flat)
+    # 1. Identify where data stops moving
     df['is_flat'] = df['consumo_kwh'].diff().abs() <= tolerance
+    
+    # 2. Group these into continuous blocks
     df['block_id'] = (df['consumo_kwh'].diff().abs() > tolerance).cumsum()
-
-    # Residential 24h weights
-    hours_idx = np.arange(24)
-    weights = np.array([0.5, 0.4, 0.4, 0.4, 0.5, 0.7, 1.1, 1.4, 1.6, 1.4, 1.2, 1.1,
-                        1.1, 1.2, 1.3, 1.4, 1.6, 1.8, 2.0, 1.8, 1.4, 1.0, 0.7, 0.5])
-    f_interp = interp1d(hours_idx, weights, kind='cubic', fill_value="wrap", bounds_error=False)
-
-    def reshape_block(group):
-        # Only reshape if the block is flat and spans a significant time (e.g. > 3 hours)
-        if group['is_flat'].all() and len(group) > 3:
-            total_energy = group['consumo_kwh'].sum()
-            # Calculate weight for every specific timestamp in the block
-            decimal_hours = group['fecha'].dt.hour + group['fecha'].dt.minute / 60.0
-            smooth_weights = f_interp(decimal_hours % 24)
-            
-            # Re-normalize: ensure the sum of new values equals the original total energy
-            if smooth_weights.sum() > 0:
-                group['consumo_kwh'] = (smooth_weights / smooth_weights.sum()) * total_energy
+    
+    # 3. Filter out blocks that are flat and meet the minimum size requirement
+    # We keep rows where the block is NOT flat OR the block is very short (jitter)
+    def filter_logic(group):
+        if group['is_flat'].all() and len(group) >= min_block_size:
+            return None # This deletes the block
         return group
 
-    return df.groupby('block_id', group_keys=False).apply(reshape_block).drop(columns=['block_id', 'is_flat'])
+    clean_df = df.groupby('block_id', group_keys=False).apply(filter_logic)
+    
+    return clean_df.drop(columns=['block_id', 'is_flat']).reset_index(drop=True)
