@@ -39,7 +39,7 @@ def apply_high_fidelity_filter(df, tolerance=1.0): # Set to 1.0 as requested
     
     def fix_block(group):
         # Check if we have a full day and if it's "flat/stagnant"
-        if len(group) == 24:
+        if len(group) == 8:
             spread = group['consumo_kwh'].max() - group['consumo_kwh'].min()
             
             if spread < tolerance:
