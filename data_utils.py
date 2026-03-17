@@ -27,8 +27,7 @@ def apply_high_fidelity_filter(df, tolerance=1.0):
     df = df.copy().reset_index(drop=True)
     
     # 1. FIX STAGNANT BLOCKS (Keeps your weight logic)
-    weights = np.array([0.5, 0.4, 0.4, 0.4, 0.5, 0.7, 1.1, 1.4, 1.6, 1.4, 1.2, 1.1,
-                        1.1, 1.2, 1.3, 1.4, 1.6, 1.8, 2.0, 1.8, 1.4, 1.0, 0.7, 0.5])
+    weights = np.array([0.41, 0.42, 0.42, 0.41, 0.42, 0.95, 1.30,1.56,1.68,1.74,1.73,1.70,1.71,1.63,1.37,1.35,1.32,1.14,0.99,0.50,0.44,0.42,0.41])
     avg_weight = np.mean(weights)
     df['date_only'] = df['fecha'].dt.date
 
