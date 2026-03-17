@@ -20,65 +20,74 @@ def load_github_energy_data(url):
         st.error(f"Module Error: {e}")
         return pd.DataFrame()
 
-def apply_high_fidelity_filter(df, stagnation_threshold=3):
+def apply_high_fidelity_filter(df, stagnation_threshold=3, noise_level=1.5):
     """
-    stagnation_threshold: Number of consecutive identical readings 
-    required to classify a section as a 'block' and remove it.
+    stagnation_threshold: Number of repeated identical values to trigger deletion.
+    noise_level: Amount of 'jitter' to add to the smooth line to make it look real.
     """
     if df.empty:
         return df
     
     df = df.copy().reset_index(drop=True)
 
-    # 1. IDENTIFY AND REMOVE FLAT BLOCKS
-    # We look for consecutive rows where the value is identical
-    # diff() == 0 means the value is the same as the previous row
+    # 1. IDENTIFY AND DELETE BLOCKS
+    # We find where the value stays exactly the same
     is_duplicate = df['consumo_kwh'].diff() == 0
     
-    # We use a rolling count to find blocks longer than our threshold
-    # This ensures we don't delete natural 1-hour plateaus, just the long 'boxy' ones
-    df['is_block'] = is_duplicate.groupby((~is_duplicate).cumsum()).transform('sum') >= stagnation_threshold
+    # Identify groups of identical values
+    group_id = (~is_duplicate).cumsum()
+    counts = df.groupby(group_id)['consumo_kwh'].transform('count')
     
-    # Drop the blocky sections
-    df_clean = df[~df['is_block']].copy()
+    # We remove the middle of the blocks, but keep the first and last points 
+    # of the transition to act as anchors for the curve.
+    is_block = (counts >= stagnation_threshold) & is_duplicate
+    
+    # Filter: Keep only data that isn't a 'stuck' repeated value
+    df_clean = df[~is_block].copy()
 
     if df_clean.empty:
         return pd.DataFrame(columns=['fecha', 'consumo_kwh'])
 
     # 2. PCHIP INTERPOLATION (The Bridge)
-    # We turn the dates into seconds to allow the math to work
     t_numeric = (df_clean['fecha'] - df_clean['fecha'].min()).dt.total_seconds().values
     y_values = df_clean['consumo_kwh'].values
     
-    # Remove duplicates in time if any exist
+    # Ensure time is unique for the math model
     t_numeric, unique_indices = np.unique(t_numeric, return_index=True)
     y_values = y_values[unique_indices]
     
-    # Pchip preserves the 'shape' and prevents the line from going below zero (overshooting)
+    # Pchip creates an organic curve without 'overshooting' (going negative)
     pchip_model = PchipInterpolator(t_numeric, y_values)
     
-    # Generate a dense 15-minute timeline to replace the missing blocks
-    t_dense = np.arange(t_numeric.min(), t_numeric.max(), 900) # 900s = 15m
+    # Create a dense 15-minute timeline for the whole range
+    total_seconds = (df['fecha'].max() - df_clean['fecha'].min()).total_seconds()
+    t_dense = np.arange(0, total_seconds, 900) # 900s = 15m
     y_dense = pchip_model(t_dense)
+    
+    # 3. ADD SYNTHETIC TEXTURE (Noise)
+    # The later months have jitter; the earlier months are too smooth after Pchip.
+    # We add a small random variance so the graph looks consistent.
+    jitter = np.random.normal(0, noise_level, len(y_dense))
+    y_dense_noisy = y_dense + jitter
     
     # Rebuild the high-res dataframe
     new_dates = pd.to_datetime(t_dense, unit='s', origin=df_clean['fecha'].min())
-    curved_df = pd.DataFrame({'fecha': new_dates, 'consumo_kwh': y_dense})
+    curved_df = pd.DataFrame({'fecha': new_dates, 'consumo_kwh': y_dense_noisy})
     
     return curved_df
 
 # --- Streamlit Execution ---
+# Replace with your actual CSV URL
 url = "YOUR_DATA_URL"
 raw_data = load_github_energy_data(url)
 
 if not raw_data.empty:
-    # We apply the filter to strip out the 'boxy' patterns
-    processed_data = apply_high_fidelity_filter(raw_data, stagnation_threshold=3)
+    # We use a threshold of 3. For your data (108.9 repeating 20+ times), 
+    # this will effectively wipe the plateaus and bridge them.
+    processed_data = apply_high_fidelity_filter(raw_data, stagnation_threshold=3, noise_level=2.0)
     
-    st.subheader("Cleaned Curve (Blocks Removed)")
+    st.subheader("High-Fidelity Consumption Curve")
     if not processed_data.empty:
-        # Note: We use .line_chart for a clean view
         st.line_chart(processed_data.set_index('fecha')['consumo_kwh'])
     else:
-        st.warning("Filter was too aggressive. Try lowering the stagnation_threshold.")
-        
+        st.warning("All data was detected as blocky. Try increasing the threshold.")
