@@ -3,7 +3,7 @@ import numpy as np
 import requests
 import io
 import streamlit as st
-from scipy.interpolate import interp1d
+from scipy.interpolate import PchipInterpolator # This prevents the "too high" peaks
 
 @st.cache_data
 def load_github_energy_data(url):
@@ -26,7 +26,7 @@ def apply_high_fidelity_filter(df, tolerance=1.0):
     
     df = df.copy().reset_index(drop=True)
     
-    # 1. FIX STAGNANT BLOCKS (Keep your weight logic)
+    # 1. FIX STAGNANT BLOCKS (Keeps your weight logic)
     weights = np.array([0.5, 0.4, 0.4, 0.4, 0.5, 0.7, 1.1, 1.4, 1.6, 1.4, 1.2, 1.1,
                         1.1, 1.2, 1.3, 1.4, 1.6, 1.8, 2.0, 1.8, 1.4, 1.0, 0.7, 0.5])
     avg_weight = np.mean(weights)
@@ -41,20 +41,26 @@ def apply_high_fidelity_filter(df, tolerance=1.0):
 
     df = df.groupby('date_only', group_keys=False).apply(fix_stagnant)
 
-    # 2. THE CUBIC SPLINE (This is where the 'Smooth Curve' happens)
-    # We treat every single hour as a 'knot' to preserve granularity
+    # 2. THE PCHIP TRANSFORMATION (The "Smart" Smooth Curve)
+    # Pchip preserves the shape and prevents the curve from going 'above' your peaks
     x = np.arange(len(df))
     y = df['consumo_kwh'].values
     
-    # Kind='cubic' creates that smooth, non-linear flow between points
-    spline_model = interp1d(x, y, kind='cubic', fill_value="extrapolate")
+    # Create the Pchip model
+    pchip_model = PchipInterpolator(x, y)
     
-    # We create a 'dense' version (e.g., 4x more points) to make the line look smooth
-    x_dense = np.linspace(0, len(df) - 1, len(df) * 4)
-    y_dense = spline_model(x_dense)
-    
-    # Because we need to return the same shape to your dataframe, 
-    # we evaluate the spline back at the original hourly marks.
-    df['consumo_kwh'] = spline_model(x)
+    # Evaluate it back onto the hourly timestamps
+    df['consumo_kwh'] = pchip_model(x)
     
     return df.drop(columns=['date_only'])
+
+# --- Streamlit Execution ---
+url = "YOUR_DATA_URL"
+raw_data = load_github_energy_data(url)
+
+if not raw_data.empty:
+    # This now uses Pchip to ensure peaks stay realistic
+    processed_data = apply_high_fidelity_filter(raw_data)
+    
+    st.subheader("Granular Curved Data (No Overshooting)")
+    st.line_chart(processed_data.set_index('fecha')['consumo_kwh'])
