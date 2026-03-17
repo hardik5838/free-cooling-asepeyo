@@ -20,7 +20,7 @@ def load_github_energy_data(url):
         st.error(f"Module Error: {e}")
         return pd.DataFrame()
 
-def apply_analysis_filter(df, stagnation_threshold=3):
+def apply_high_fidelity_filter(df, stagnation_threshold=3):
     """
     Surgically removes mathematical blocks for clean data analysis.
     No noise addition; pure shape-preserving interpolation.
