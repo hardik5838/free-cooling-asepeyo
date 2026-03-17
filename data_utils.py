@@ -3,7 +3,7 @@ import numpy as np
 import requests
 import io
 import streamlit as st
-from scipy.interpolate import interp1d # Efficient cubic spline tool
+from scipy.signal import savgol_filter
 
 @st.cache_data
 def load_github_energy_data(url):
@@ -22,56 +22,63 @@ def load_github_energy_data(url):
         st.error(f"Module Error: {e}")
         return pd.DataFrame()
 
-def apply_high_fidelity_filter(df):
-    """
-    Transforms 'blocks of average' into a smooth continuous curve 
-    using Cubic Spline interpolation.
-    """
-    if df.empty or len(df) < 4:  # Spline needs at least 4 points for 'cubic'
+def apply_high_fidelity_filter(df, tolerance=1.0):
+    if df.empty:
         return df
     
     df = df.copy()
     
-    # 1. Create the "Blocks" (Daily Averages)
-    # This finds the mean consumption for every day in the dataset
-    daily = df.groupby(df['fecha'].dt.date)['consumo_kwh'].mean().reset_index()
-    daily['fecha'] = pd.to_datetime(daily['fecha'])
+    # 1. Define the "Normal" 24-hour Profile Weights
+    # These weights ensure we keep the "Daily Highs and Lows"
+    weights = np.array([
+        0.5, 0.4, 0.4, 0.4, 0.5, 0.7, 1.1, 1.4, 1.6, 1.4, 1.2, 1.1,
+        1.1, 1.2, 1.3, 1.4, 1.6, 1.8, 2.0, 1.8, 1.4, 1.0, 0.7, 0.5
+    ])
+    avg_weight = np.mean(weights)
     
-    # 2. Define the "Knots" for the Spline
-    # We place the daily average value at the middle of each day (12:00 PM)
-    daily['knot_time'] = daily['fecha'] + pd.Timedelta(hours=12)
+    # 2. Identify and "Curve" the Stagnant Blocks
+    df['date_only'] = df['fecha'].dt.date
     
-    # 3. Convert Time to Numeric for Scipy
-    # Interpolation requires numeric X values (seconds since start)
-    start_time = df['fecha'].min()
-    daily_x = (daily['knot_time'] - start_time).dt.total_seconds()
-    daily_y = daily['consumo_kwh']
-    
-    # 4. Build the Cubic Spline Model
-    # 'cubic' creates the smooth curve that reshapes the blocky data
-    spline_model = interp1d(daily_x, daily_y, kind='cubic', fill_value="extrapolate")
-    
-    # 5. Reshape the original hourly data
-    # We evaluate the spline at every actual hourly timestamp in your data
-    df_x = (df['fecha'] - start_time).dt.total_seconds()
-    df['consumo_kwh'] = spline_model(df_x)
-    
-    # Safety: Energy consumption cannot be negative
-    df['consumo_kwh'] = df['consumo_kwh'].clip(lower=0)
-    
-    return df
+    def fix_block(group):
+        # We check for a full day (24 hours) or stagnant data
+        spread = group['consumo_kwh'].max() - group['consumo_kwh'].min()
+        
+        if spread < tolerance:
+            # This is a 'flat' block. We reshape it using the weights.
+            block_avg = group['consumo_kwh'].mean()
+            hours = group['fecha'].dt.hour.values
+            
+            new_values = []
+            for h in hours:
+                h_idx = int(h) % 24
+                corrected_val = block_avg * (weights[h_idx] / avg_weight)
+                new_values.append(corrected_val)
+            
+            group['consumo_kwh'] = new_values
+        return group
 
-# --- Streamlit Execution Example ---
-st.title("Energy Consumption Curve Generator")
-url = "YOUR_GITHUB_CSV_URL" # Replace with your actual URL
+    # Apply the profile to flat days
+    df = df.groupby('date_only', group_keys=False).apply(fix_block)
 
-data = load_github_energy_data(url)
-if not data.empty:
-    st.subheader("Original Data (with blocks)")
-    st.line_chart(data.set_index('fecha')['consumo_kwh'])
+    # 3. Apply High-Granularity Smoothing (The "Cubic Spline" effect)
+    # Savitzky-Golay with a small window (e.g., 5 or 7 hours)
+    # This turns the "steps" between hours into smooth curves 
+    # WITHOUT losing the daily peaks.
+    window_size = 7  # Must be odd. Smaller = more granularity, Larger = smoother.
+    if len(df) > window_size:
+        df['consumo_kwh'] = savgol_filter(df['consumo_kwh'], 
+                                         window_length=window_size, 
+                                         polyorder=3) # polyorder 3 = Cubic behavior
 
-    # Apply the Cubic Spline Transformation
-    curved_data = apply_high_fidelity_filter(data)
+    return df.drop(columns=['date_only'])
 
-    st.subheader("Reshaped Data (Cubic Spline)")
-    st.line_chart(curved_data.set_index('fecha')['consumo_kwh'])
+# --- Streamlit Usage ---
+url = "YOUR_DATA_URL"
+raw_data = load_github_energy_data(url)
+
+if not raw_data.empty:
+    processed_data = apply_high_fidelity_filter(raw_data)
+    
+    st.subheader("High-Granularity Curved Data")
+    # This will now show the daily peaks/valleys but as a smooth curve
+    st.line_chart(processed_data.set_index('fecha')['consumo_kwh'])
