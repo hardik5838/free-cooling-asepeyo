@@ -1,4 +1,5 @@
 import streamlit as st
+import requests
 from data_utils import load_github_energy_data
 from data_utils import apply_high_fidelity_filter
 
