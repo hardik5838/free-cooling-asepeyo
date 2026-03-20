@@ -64,3 +64,47 @@ if run_features and not model_data.empty:
     # Tail(500) gives us a clear look at the last few days
     comparison_plot = model_data.tail(500).set_index('fecha')[['consumo_kwh', 'lag_7d']]
     st.line_chart(comparison_plot)
+
+# --- 7. DETAILED LOAD BREAKDOWN (APPENDAGE) ---
+st.divider()
+st.header("🔍 Daily Energy 'Slice' Inspection")
+st.write("Isolating the Variable Load (HVAC/Lighting) from the Static Baseload.")
+
+# 1. Date Selection
+selected_date = st.date_input("Select a day to inspect", data['fecha'].max())
+
+# 2. Filter data for that day
+day_data = data[data['fecha'].dt.date == selected_date].copy()
+
+if not day_data.empty:
+    # 3. Disaggregation Logic (Simplified for Visualization)
+    day_data = day_data.set_index('fecha')
+    day_data['Base_Load'] = baseload_val
+    # Variable Load is everything above the floor
+    day_data['Variable_Load'] = (day_data['consumo_kwh'] - baseload_val).clip(lower=0)
+    
+    # 4. Visualization: Stacked Area Chart
+    # This clearly shows the 'Parasitic' floor vs the 'Active' usage
+    st.subheader(f"Energy Distribution for {selected_date}")
+    st.area_chart(day_data[['Base_Load', 'Variable_Load']], color=["#7f8c8d", "#2ecc71"])
+
+    # 5. Efficiency Insights (Financial Tooling)
+    var_total = day_data['Variable_Load'].sum()
+    base_total = day_data['Base_Load'].sum()
+    total_day = day_data['consumo_kwh'].sum()
+    
+    col_a, col_b, col_c = st.columns(3)
+    with col_a:
+        st.metric("Variable Energy (HVAC/Light)", f"{var_total:.1f} kWh")
+        st.caption("Energy influenced by occupancy/weather.")
+    with col_b:
+        efficiency_ratio = (var_total / total_day) * 100
+        st.metric("Efficiency Ratio", f"{efficiency_ratio:.1%}")
+        st.caption("Percentage of energy used for active tasks.")
+    with col_c:
+        # Optimization Goal: 15% reduction in Variable Load
+        potential_saving = var_total * 0.15 * 0.15 # 15% reduction @ €0.15/kWh
+        st.metric("Oasis Optimization Target", f"€{potential_saving:.2f}", delta="-15%")
+        st.caption("Daily saving potential via Oasis Control.")
+else:
+    st.warning("No high-fidelity data available for the selected date.")
