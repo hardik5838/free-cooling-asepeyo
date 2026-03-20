@@ -65,46 +65,49 @@ if run_features and not model_data.empty:
     comparison_plot = model_data.tail(500).set_index('fecha')[['consumo_kwh', 'lag_7d']]
     st.line_chart(comparison_plot)
 
-# --- 7. DETAILED LOAD BREAKDOWN (APPENDAGE) ---
-st.divider()
-st.header("🔍 Daily Energy 'Slice' Inspection")
-st.write("Isolating the Variable Load (HVAC/Lighting) from the Static Baseload.")
+# --- 7. DETAILED LOAD BREAKDOWN (Corrected Placement) ---
+# We check if 'data' exists before running this to prevent NameErrors
+if 'data' in locals() and not data.empty:
+    st.divider()
+    st.header("Daily Energy 'Slice' Inspection")
+    st.write("Isolating the Variable Load (HVAC/Lighting) from the Static Baseload.")
 
-# 1. Date Selection
-selected_date = st.date_input("Select a day to inspect", data['fecha'].max())
+    # 1. Date Selection
+    # We use the date from the actual data to avoid range errors
+    latest_date = data['fecha'].max().date()
+    selected_date = st.date_input("Select a day to inspect", latest_date)
 
-# 2. Filter data for that day
-day_data = data[data['fecha'].dt.date == selected_date].copy()
+    # 2. Filter data for that day
+    day_data = data[data['fecha'].dt.date == selected_date].copy()
 
-if not day_data.empty:
-    # 3. Disaggregation Logic (Simplified for Visualization)
-    day_data = day_data.set_index('fecha')
-    day_data['Base_Load'] = baseload_val
-    # Variable Load is everything above the floor
-    day_data['Variable_Load'] = (day_data['consumo_kwh'] - baseload_val).clip(lower=0)
-    
-    # 4. Visualization: Stacked Area Chart
-    # This clearly shows the 'Parasitic' floor vs the 'Active' usage
-    st.subheader(f"Energy Distribution for {selected_date}")
-    st.area_chart(day_data[['Base_Load', 'Variable_Load']], color=["#7f8c8d", "#2ecc71"])
+    if not day_data.empty:
+        # 3. Disaggregation Logic
+        day_data = day_data.set_index('fecha')
+        
+        # We ensure baseload_val is used here. 
+        # If it wasn't calculated, we default to 0 to prevent a crash.
+        current_baseload = baseload_val if 'baseload_val' in locals() else 0
+        
+        day_data['Base_Load'] = current_baseload
+        day_data['Variable_Load'] = (day_data['consumo_kwh'] - current_baseload).clip(lower=0)
+        
+        # 4. Visualization: Stacked Area Chart
+        st.subheader(f"Energy Distribution for {selected_date}")
+        st.area_chart(day_data[['Base_Load', 'Variable_Load']], color=["#7f8c8d", "#2ecc71"])
 
-    # 5. Efficiency Insights (Financial Tooling)
-    var_total = day_data['Variable_Load'].sum()
-    base_total = day_data['Base_Load'].sum()
-    total_day = day_data['consumo_kwh'].sum()
-    
-    col_a, col_b, col_c = st.columns(3)
-    with col_a:
-        st.metric("Variable Energy (HVAC/Light)", f"{var_total:.1f} kWh")
-        st.caption("Energy influenced by occupancy/weather.")
-    with col_b:
-        efficiency_ratio = (var_total / total_day) * 100
-        st.metric("Efficiency Ratio", f"{efficiency_ratio:.1%}")
-        st.caption("Percentage of energy used for active tasks.")
-    with col_c:
-        # Optimization Goal: 15% reduction in Variable Load
-        potential_saving = var_total * 0.15 * 0.15 # 15% reduction @ €0.15/kWh
-        st.metric("Oasis Optimization Target", f"€{potential_saving:.2f}", delta="-15%")
-        st.caption("Daily saving potential via Oasis Control.")
-else:
-    st.warning("No high-fidelity data available for the selected date.")
+        # 5. Financial Metrics (Oasis Efficiency Tool)
+        var_total = day_data['Variable_Load'].sum()
+        total_day = day_data['consumo_kwh'].sum()
+        
+        col_a, col_b, col_c = st.columns(3)
+        with col_a:
+            st.metric("Variable Energy", f"{var_total:.1f} kWh")
+        with col_b:
+            efficiency = (var_total / total_day) if total_day > 0 else 0
+            st.metric("Efficiency Ratio", f"{efficiency:.1%}")
+        with col_c:
+            # Financial Target: 15% optimization at €0.15/kWh
+            saving = var_total * 0.15 * 0.15
+            st.metric("Oasis Saving Potential", f"€{saving:.2f}", delta="-15%")
+    else:
+        st.warning(f"No data found for {selected_date}. Please pick a different day.")
