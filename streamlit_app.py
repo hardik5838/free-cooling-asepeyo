@@ -105,14 +105,14 @@ def run_precool_simulation(hours, temps, config):
 # ==========================================
 
 def show_precool_optimizer_page():
-    st.title("🧊 Oasis Pre-cooling Optimizer")
+    st.title(" Oasis Pre-cooling Optimizer")
     st.markdown("Transform your building profile from a passive consumer into an active thermal asset using **Glider Theory** structural charging.")
     
     # Create Layout Columns
     col_inputs, col_results = st.columns([1, 2])
     
     with col_inputs:
-        st.header("⚙️ Building & Target Parameters")
+        st.header(" Building & Target Parameters")
         
         # Thermal Watchdog Inputs
         t_comfort_max = st.slider("Max Legal Comfort Limit (T_comfort_max) [°C]", 24.0, 28.0, 27.0, 
@@ -127,10 +127,10 @@ def show_precool_optimizer_page():
         # Calculate dynamic target point using Thesis Formula (1)
         t_launch_target = calculate_target_launch_temp(t_comfort_max, delta_t_p1, r_drift, floor_temp)
         
-        st.metric(label="🎯 Calculated Target Launch Temperature (X)", value=f"{t_launch_target:.1f} °C")
+        st.metric(label=" Calculated Target Launch Temperature (X)", value=f"{t_launch_target:.1f} °C")
         
         st.divider()
-        st.header("🏢 Physical Structural Mass Attributes")
+        st.header(" Physical Structural Mass Attributes")
         ua = st.number_input("Building Heat Loss Envelope Coefficient (U × A) [W/K]", value=1200.0, step=100.0)
         capacitance = st.number_input("Building Thermal Capacitance (C) [kJ/K]", value=45000.0, step=1000.0)
         max_cap = st.number_input("Max Electrical HVAC Capacity [kW]", value=35.0, step=5.0)
@@ -156,7 +156,7 @@ def show_precool_optimizer_page():
         savings_daily = total_cost_base - total_cost_opt
         savings_pct = (savings_daily / total_cost_base) * 100 if total_cost_base > 0 else 0
         
-        st.header("📊 Optimization Financial KPIs")
+        st.header(" Optimization Financial KPIs")
         kpi1, kpi2, kpi3 = st.columns(3)
         kpi1.metric("Baseline Daily Cost", f"{total_cost_base:.2f} €")
         kpi2.metric("Optimized Daily Cost", f"{total_cost_opt:.2f} €", delta=f"-{savings_daily:.2f} €")
@@ -165,7 +165,7 @@ def show_precool_optimizer_page():
         st.divider()
         
         # Chart 1: Electric Profile Performance Comparison
-        st.subheader("⚡ Load Shifting Performance Strategy")
+        st.subheader(" Load Shifting Performance Strategy")
         fig_load = go.Figure()
         fig_load.add_trace(go.Scatter(x=df_sim['hora'], y=df_sim['hvac_kw_baseline'], name="Baseline Schedule Load", line=dict(color='rgb(231, 76, 60)', dash='dash', width=2)))
         fig_load.add_trace(go.Scatter(x=df_sim['hora'], y=df_sim['hvac_kw_optimized'], name="Oasis Pre-cooled (Shifted) Load", fill='tozeroy', fillcolor='rgba(46, 204, 113, 0.2)', line=dict(color='rgb(46, 204, 113)', width=3)))
@@ -173,7 +173,7 @@ def show_precool_optimizer_page():
         st.plotly_chart(fig_load, use_container_width=True)
         
         # Chart 2: Internal Space Ambient Curve Flyby
-        st.subheader("🌡️ Internal Building Temperature Glider Space Trajectory")
+        st.subheader(" Internal Building Temperature Glider Space Trajectory")
         fig_temp = go.Figure()
         fig_temp.add_trace(go.Scatter(x=df_sim['hora'], y=df_sim['temp_ambient'], name="Outdoor Temperature", line=dict(color='orange', width=2, dash='dot')))
         fig_temp.add_trace(go.Scatter(x=df_sim['hora'], y=df_sim['t_in_baseline'], name="Baseline Space Room Temp", line=dict(color='grey', width=2)))
